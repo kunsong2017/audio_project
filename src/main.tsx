@@ -10,6 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
+const APP_VERSION = 'v1.0.2'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -31,6 +32,7 @@ function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [notice, setNotice] = useState('')
   const [readingBook, setReadingBook] = useState<BookRecord>()
+  const [remoteVersion, setRemoteVersion] = useState('')
 
   const refresh = async () => {
     const [nextBooks, nextModels, nextStats] = await Promise.all([db.books(), db.models(), db.stats()])
@@ -50,14 +52,25 @@ function App() {
 
   const pwa = useRegisterSW({ immediate: true, onOfflineReady: () => setOfflineReady(true) })
   useEffect(() => { if (pwa.offlineReady[0]) setOfflineReady(true) }, [pwa.offlineReady])
+  useEffect(() => {
+    void fetch(`${import.meta.env.BASE_URL}version.json?check=${Date.now()}`, { cache: 'no-store' })
+      .then((response) => response.ok ? response.json() as Promise<{ version?: string }> : undefined)
+      .then((data) => { if (data?.version) setRemoteVersion(data.version) })
+      .catch(() => undefined)
+  }, [])
+  const updateAvailable = pwa.needRefresh[0] || Boolean(remoteVersion && remoteVersion !== APP_VERSION)
+  const updateNow = async () => {
+    try { await pwa.updateServiceWorker(true) } catch { window.location.reload() }
+  }
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-mark">◖</div>
-        <div><div className="eyebrow">OFFLINE FIRST / V1</div><h1>听书</h1></div>
+        <div><div className="eyebrow">OFFLINE FIRST / V1</div><h1>听书 <small className="app-version">{APP_VERSION}</small></h1></div>
         <div className="connection"><span className={isOnline ? 'live-dot' : 'offline-dot'} />{isOnline ? '在线' : '离线'}</div>
       </header>
+      {updateAvailable && <button className="update-banner" onClick={() => void updateNow()}>发现新版本 {remoteVersion || ''}，点击立即更新</button>}
       <main>
         <section className="hero">
           <div>
