@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@mintplex-labs/piper-tts-web": "^1.0.5",
+    "fflate": "^0.8.3",
     "onnxruntime-web": "^1.21.0",
     "piper-tts-web": "^1.1.2",
     "react": "^19.1.0",

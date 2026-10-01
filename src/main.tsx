@@ -4,6 +4,7 @@ import { useRegisterSW } from 'virtual:pwa-register/react'
 import { configureOrt, downloadModel, runBenchmark } from './onnxBenchmark'
 import { db, formatBytes } from './db'
 import { parseTxt } from './txt'
+import { parseEpub } from './epub'
 import type { AppTab, BenchmarkResult, BookRecord, ModelRecord, StorageStats } from './types'
 import { ReaderPage } from './reader'
 import './styles.css'
@@ -12,7 +13,7 @@ configureOrt(import.meta.env.BASE_URL)
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
-  { id: 'import', label: '导入 TXT', icon: '＋' },
+  { id: 'import', label: '导入书籍', icon: '＋' },
   { id: 'library', label: '书架', icon: '▤' },
   { id: 'storage', label: '存储', icon: '⌁' },
 ]
@@ -78,7 +79,7 @@ function App() {
         </section>
         <div className="page-content">
           {tab === 'benchmark' && <BenchmarkPage models={models} onChanged={refresh} onNotice={setNotice} />}
-          {tab === 'import' && <ImportPage onImported={async () => { await refresh(); setTab('library'); setNotice('TXT 已保存在本机，原始文件仍在 Files 中。') }} />}
+          {tab === 'import' && <ImportPage onImported={async (format) => { await refresh(); setTab('library'); setNotice(`${format} 已保存在本机，原始文件仍在 Files 中。`) }} onNotice={setNotice} />}
           {readingBook ? <ReaderPage book={readingBook} models={models} onBack={() => { setReadingBook(undefined); void refresh() }} onChanged={refresh} onNotice={setNotice} /> : tab === 'library' && <LibraryPage books={books} onOpen={(book) => setReadingBook(book)} />}
           {tab === 'storage' && <StoragePage stats={stats} models={models} onChanged={refresh} />}
         </div>
@@ -135,7 +136,7 @@ function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[];
   </>
 }
 
-function ImportPage({ onImported }: { onImported: () => Promise<void> }) {
+function ImportPage({ onImported, onNotice }: { onImported: (format: string) => Promise<void>; onNotice: (message: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [fileName, setFileName] = useState('')
   const onFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -143,13 +144,18 @@ function ImportPage({ onImported }: { onImported: () => Promise<void> }) {
     if (!file) return
     setBusy(true); setFileName(file.name)
     try {
-      const parsed = parseTxt(file.name.replace(/\.txt$/i, ''), file.name, file.size, await file.text())
+      const isEpub = /\.epub$/i.test(file.name)
+      const parsed = isEpub
+        ? await parseEpub(file)
+        : parseTxt(file.name.replace(/\.txt$/i, ''), file.name, file.size, await file.text())
       await db.saveBook(parsed.book)
       await Promise.all(parsed.chapters.map((chapter) => db.saveChapter(chapter)))
-      await onImported()
+      await onImported(isEpub ? 'EPUB' : 'TXT')
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : String(error))
     } finally { setBusy(false); event.target.value = '' }
   }
-  return <><div className="section-heading"><div><div className="eyebrow accent">LOCAL SOURCE</div><h3>从 Files 导入 TXT</h3></div></div><div className="panel import-panel"><div className="drop-icon">TXT</div><h4>{busy ? '正在解析章节…' : '选择一本本地小说'}</h4><p>文件只在浏览器内读取，解析后的章节写入本机 IndexedDB，不会上传服务器。</p><label className="primary-button file-button">{fileName || '选择 .txt 文件'}<input type="file" accept=".txt,text/plain" onChange={(event) => void onFile(event)} disabled={busy} /></label><small>原始 TXT 仍是用户数据源。请保留 Files 中的原文件，PWA 缓存不作为唯一备份。</small></div></>
+  return <><div className="section-heading"><div><div className="eyebrow accent">LOCAL SOURCE</div><h3>从 Files 导入 TXT / EPUB</h3></div></div><div className="panel import-panel"><div className="drop-icon">TXT<br />EPUB</div><h4>{busy ? '正在解析章节…' : '选择一本本地小说'}</h4><p>TXT 和 EPUB 都只在浏览器内读取，解析后的章节写入本机 IndexedDB，不会上传服务器。</p><label className="primary-button file-button">{fileName || '选择 .txt 或 .epub 文件'}<input type="file" accept=".txt,text/plain,.epub,application/epub+zip" onChange={(event) => void onFile(event)} disabled={busy} /></label><small>原始 TXT/EPUB 仍是用户数据源。请保留 Files 中的原文件，PWA 缓存不作为唯一备份。</small></div></>
 }
 
 function LibraryPage({ books, onOpen }: { books: BookRecord[]; onOpen: (book: BookRecord) => void }) {
