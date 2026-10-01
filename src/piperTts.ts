@@ -59,8 +59,28 @@ function splitIntoChunks(text: string, maxLength = MAX_CHUNK_LENGTH): string[] {
 
 async function loadConfig(model: ModelRecord): Promise<PiperConfig> {
   const record = (await db.modelData()).find((item) => item.id === `${model.id}:config`)
-  if (!record) throw new Error('缺少 Piper 模型配置，请删除旧模型后重新下载 .onnx。')
-  return JSON.parse(await record.blob.text()) as PiperConfig
+  if (record) return JSON.parse(await record.blob.text()) as PiperConfig
+
+  if (!navigator.onLine) throw new Error('旧模型缺少 Piper 配置。请联网打开一次书籍，自动补齐配置后即可离线使用。')
+  const configUrl = model.configUrl ?? model.url.replace(/\.onnx(\?.*)?$/i, '.onnx.json$1')
+  const response = await fetch(configUrl, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`旧模型配置自动修复失败：HTTP ${response.status}。请确认模型地址旁边存在 .onnx.json。`)
+  const configText = await response.text()
+  let config: PiperConfig
+  try {
+    config = JSON.parse(configText) as PiperConfig
+  } catch {
+    throw new Error('旧模型配置自动修复失败：.onnx.json 不是有效 JSON。')
+  }
+  if (!config.audio?.sample_rate || !config.espeak?.voice || !config.inference) throw new Error('旧模型配置自动修复失败：Piper 配置字段不完整。')
+  await db.saveModelData({
+    id: `${model.id}:config`,
+    modelId: model.id,
+    bytes: new Blob([configText]).size,
+    blob: new Blob([configText], { type: 'application/json' }),
+  })
+  await db.saveModel({ ...model, configUrl })
+  return config
 }
 
 async function loadSession(model: ModelRecord): Promise<ort.InferenceSession> {

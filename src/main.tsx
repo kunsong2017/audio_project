@@ -10,7 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.0.2'
+const APP_VERSION = 'v1.0.3'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },

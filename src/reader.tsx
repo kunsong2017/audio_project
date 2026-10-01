@@ -217,11 +217,16 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     await db.saveSettings({ ...(await db.getSettings()), playbackRate: nextRate })
   }
 
+  function turnPage(direction: -1 | 1) {
+    window.scrollBy({ top: direction * Math.round(window.innerHeight * 0.78), behavior: 'smooth' })
+  }
+
   if (chapters.length === 0) return <div className="reader-page"><button className="text-button" onClick={onBack}>← 返回书架</button><div className="empty-state"><p>正在读取章节…</p></div></div>
 
   return <div className="reader-page">
     <div className="reader-header"><button className="text-button" onClick={onBack}>← 书架</button><span className="chip">{chapterIndex + 1} / {chapters.length}</span></div>
     <div className="reader-title"><div className="eyebrow accent">READING LOCALLY</div><h3>{book.title}</h3><select value={chapterIndex} onChange={(event) => void startChapter(Number(event.target.value))}>{chapters.map((item) => <option value={item.index} key={item.id}>{item.title}</option>)}</select></div>
+    <div className="reader-page-nav"><button onClick={() => turnPage(-1)}>↑ 上一页</button><span>可滑动阅读</span><button onClick={() => turnPage(1)}>下一页 ↓</button></div>
     <article className="reader-text"><h4>{chapter?.title}</h4>{chapter?.text.split(/\n+/).filter(Boolean).map((paragraph, index) => <p key={`${chapter.id}-${index}`}>{paragraph}</p>)}</article>
     <div className="player-panel">
       <div className="player-status"><span className={playing ? 'pulse' : 'offline-dot'} />{phase}</div>
