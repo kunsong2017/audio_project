@@ -72,8 +72,13 @@ export const db = {
   saveModel: (model: ModelRecord) => put('models', model),
   saveAudio: (audio: AudioCacheRecord) => put('audio', audio),
   modelData: () => getAll<ModelBlobRecord>('modelData'),
-  deleteModel: async (id: string) => { await remove('models', id); await remove('modelData', id) },
+  deleteModel: async (id: string) => { await remove('models', id); await remove('modelData', id); await remove('modelData', `${id}:config`) },
   saveModelData: (data: ModelBlobRecord) => put('modelData', data),
+  getBook: async (id: string) => (await getAll<BookRecord>('books')).find((book) => book.id === id),
+  chaptersForBook: async (bookId: string) => (await getAll<ChapterRecord>('chapters')).filter((chapter) => chapter.bookId === bookId).sort((a, b) => a.index - b.index),
+  audioForChapter: async (chapterId: string, modelId: string) => (await getAll<AudioCacheRecord>('audio'))
+    .filter((audio) => audio.chapterId === chapterId && audio.modelId === modelId && !audio.id.endsWith(':weights'))
+    .sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0)),
   deleteAudio: (id: string) => remove('audio', id),
   deleteAudioByIds: async (ids: string[]) => Promise.all(ids.map((id) => remove('audio', id))).then(() => undefined),
   getSettings: async (): Promise<AppSettings> => {
@@ -90,7 +95,7 @@ export const db = {
       chapters: chapters.length,
       models: models.length,
       modelBytes: models.reduce((total, item) => total + item.bytes, 0),
-      audioItems: audio.length,
+      audioItems: audio.filter((item) => !item.id.endsWith(':weights')).length,
       audioBytes: audio.filter((item) => !item.id.endsWith(':weights')).reduce((total, item) => total + item.bytes, 0),
     }
   },

@@ -25,6 +25,7 @@ export interface ModelRecord {
   id: string
   name: string
   url: string
+  configUrl?: string
   bytes: number
   downloadedAt: number
   sampleRate: number
@@ -42,6 +43,8 @@ export interface AudioCacheRecord {
   bookId?: string
   chapterId?: string
   modelId: string
+  chunkIndex?: number
+  text?: string
   bytes: number
   duration: number
   createdAt: number

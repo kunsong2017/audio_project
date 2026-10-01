@@ -42,13 +42,22 @@ export async function downloadModel(url: string, onProgress?: (progress: Benchma
   let offset = 0
   chunks.forEach((chunk) => { buffer.set(chunk, offset); offset += chunk.byteLength })
   const record: ModelRecord = {
-    id: modelId(url), name: url.split('/').pop() || 'custom-model.onnx', url,
+    id: modelId(url), name: url.split('/').pop()?.split('?')[0] || 'custom-model.onnx', url,
     bytes: buffer.byteLength, downloadedAt: Date.now(), sampleRate: DEFAULT_SAMPLE_RATE,
   }
+  const configUrl = url.replace(/\.onnx(\?.*)?$/i, '.onnx.json$1')
+  const configResponse = await fetch(configUrl, { cache: 'no-store' })
+  if (!configResponse.ok) throw new Error(`模型配置下载失败：HTTP ${configResponse.status}（需要与 .onnx 同目录的 .onnx.json）`)
+  const configBuffer = await configResponse.arrayBuffer()
+  record.configUrl = configUrl
   await db.saveModel(record)
   await db.saveModelData({
     id: record.id, modelId: record.id, bytes: buffer.byteLength,
     blob: new Blob([buffer], { type: 'application/octet-stream' }),
+  })
+  await db.saveModelData({
+    id: `${record.id}:config`, modelId: record.id, bytes: configBuffer.byteLength,
+    blob: new Blob([configBuffer], { type: 'application/json' }),
   })
   return record
 }

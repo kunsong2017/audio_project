@@ -5,6 +5,7 @@ import { configureOrt, downloadModel, runBenchmark } from './onnxBenchmark'
 import { db, formatBytes } from './db'
 import { parseTxt } from './txt'
 import type { AppTab, BenchmarkResult, BookRecord, ModelRecord, StorageStats } from './types'
+import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
@@ -28,6 +29,7 @@ function App() {
   const [offlineReady, setOfflineReady] = useState(false)
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [notice, setNotice] = useState('')
+  const [readingBook, setReadingBook] = useState<BookRecord>()
 
   const refresh = async () => {
     const [nextBooks, nextModels, nextStats] = await Promise.all([db.books(), db.models(), db.stats()])
@@ -77,7 +79,7 @@ function App() {
         <div className="page-content">
           {tab === 'benchmark' && <BenchmarkPage models={models} onChanged={refresh} onNotice={setNotice} />}
           {tab === 'import' && <ImportPage onImported={async () => { await refresh(); setTab('library'); setNotice('TXT 已保存在本机，原始文件仍在 Files 中。') }} />}
-          {tab === 'library' && <LibraryPage books={books} />}
+          {readingBook ? <ReaderPage book={readingBook} models={models} onBack={() => { setReadingBook(undefined); void refresh() }} onChanged={refresh} onNotice={setNotice} /> : tab === 'library' && <LibraryPage books={books} onOpen={(book) => setReadingBook(book)} />}
           {tab === 'storage' && <StoragePage stats={stats} models={models} onChanged={refresh} />}
         </div>
       </main>
@@ -90,7 +92,7 @@ function App() {
 }
 
 function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[]; onChanged: () => Promise<void>; onNotice: (value: string) => void }) {
-  const [url, setUrl] = useState('')
+  const [url, setUrl] = useState('https://hf-mirror.com/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/x_low/zh_CN-huayan-x_low.onnx?download=true')
   const [selectedId, setSelectedId] = useState('')
   const [phase, setPhase] = useState('准备就绪')
   const [downloadProgress, setDownloadProgress] = useState<number>()
@@ -124,7 +126,7 @@ function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[];
     <div className="panel model-panel">
       <label className="field-label">ONNX 模型直链 <span>不会上传小说</span></label>
       <div className="input-row"><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://.../tts-model.onnx" inputMode="url" /><button disabled={busy} onClick={() => void handleDownload()}>{busy && downloadProgress !== undefined ? `${Math.round(downloadProgress * 100)}%` : '下载并缓存'}</button></div>
-      <small>模型需要允许浏览器跨域读取，并且输入/输出结构需配合后续中文 tokenizer adapter。当前页面会如实记录不兼容错误。</small>
+      <small>建议使用预填的 Piper 中文模型地址。下载时会同时缓存 .onnx.json 配置；模型、配置和音素 WASM 齐全后，断网也能在书架中阅读和听书。</small>
       {models.length > 0 && <div className="cached-models"><span className="field-label">本机模型</span>{models.map((model) => <button key={model.id} className={`model-item ${selected?.id === model.id ? 'selected' : ''}`} onClick={() => setSelectedId(model.id)}><span>{model.name}</span><small>{formatBytes(model.bytes)} · 可离线</small></button>)}</div>}
     </div>
     <div className="benchmark-action"><div><span className="eyebrow">TEST TEXT</span><strong>100 / 500 / 1000 字</strong></div><button className="primary-button" disabled={busy || !selected} onClick={() => void handleRun()}>{busy ? phase : '运行本地 benchmark'} <span>→</span></button></div>
@@ -150,8 +152,8 @@ function ImportPage({ onImported }: { onImported: () => Promise<void> }) {
   return <><div className="section-heading"><div><div className="eyebrow accent">LOCAL SOURCE</div><h3>从 Files 导入 TXT</h3></div></div><div className="panel import-panel"><div className="drop-icon">TXT</div><h4>{busy ? '正在解析章节…' : '选择一本本地小说'}</h4><p>文件只在浏览器内读取，解析后的章节写入本机 IndexedDB，不会上传服务器。</p><label className="primary-button file-button">{fileName || '选择 .txt 文件'}<input type="file" accept=".txt,text/plain" onChange={(event) => void onFile(event)} disabled={busy} /></label><small>原始 TXT 仍是用户数据源。请保留 Files 中的原文件，PWA 缓存不作为唯一备份。</small></div></>
 }
 
-function LibraryPage({ books }: { books: BookRecord[] }) {
-  return <><div className="section-heading"><div><div className="eyebrow accent">YOUR SHELF</div><h3>书架</h3></div><span className="chip">{books.length} 本</span></div>{books.length === 0 ? <div className="empty-state"><span>▤</span><p>还没有书。先从本地 Files 导入一本 TXT。</p></div> : <div className="book-list">{books.map((book) => <article className="book-card" key={book.id}><div className="book-cover">{book.title.slice(0, 1)}</div><div><h4>{book.title}</h4><p>{book.chapterCount} 章 · {book.sourceName}</p><small>进度：第 {book.currentChapter + 1} 章</small></div><button aria-label="打开书籍">→</button></article>)}</div>}</>
+function LibraryPage({ books, onOpen }: { books: BookRecord[]; onOpen: (book: BookRecord) => void }) {
+  return <><div className="section-heading"><div><div className="eyebrow accent">YOUR SHELF</div><h3>书架</h3></div><span className="chip">{books.length} 本</span></div>{books.length === 0 ? <div className="empty-state"><span>▤</span><p>还没有书。先从本地 Files 导入一本 TXT。</p></div> : <div className="book-list">{books.map((book) => <article className="book-card" key={book.id} onClick={() => onOpen(book)}><div className="book-cover">{book.title.slice(0, 1)}</div><div><h4>{book.title}</h4><p>{book.chapterCount} 章 · {book.sourceName}</p><small>进度：第 {book.currentChapter + 1} 章</small></div><button aria-label="打开书籍" onClick={(event) => { event.stopPropagation(); onOpen(book) }}>→</button></article>)}</div>}</>
 }
 
 function StoragePage({ stats, models, onChanged }: { stats?: StorageStats; models: ModelRecord[]; onChanged: () => Promise<void> }) {

@@ -13,6 +13,9 @@ export default defineConfig({
       targets: [
         { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', dest: 'ort' },
         { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', dest: 'ort' },
+        { src: 'node_modules/@mintplex-labs/piper-tts-web/dist/piper-o91UDS6e.js', dest: 'piper' },
+        { src: 'node_modules/piper-tts-web/dist/piper/piper_phonemize.data', dest: 'piper' },
+        { src: 'node_modules/piper-tts-web/dist/piper/piper_phonemize.wasm', dest: 'piper' },
       ],
     }),
     VitePWA({
@@ -33,9 +36,9 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,wasm,webmanifest}'],
+        globPatterns: ['**/*.{js,css,html,svg,wasm,webmanifest,data}'],
         globIgnores: ['assets/ort-*.wasm'],
-        maximumFileSizeToCacheInBytes: 16 * 1024 * 1024,
+        maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
         navigateFallback: 'index.html',
       },
       devOptions: { enabled: true },
