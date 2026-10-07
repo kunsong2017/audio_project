@@ -12,6 +12,7 @@ interface ReaderProps {
 }
 
 interface ChapterPlan {
+  runId: number
   chapter: ChapterRecord
   model: ModelRecord
   dialogueModel?: ModelRecord
@@ -48,11 +49,16 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   const currentPlan = useRef<ChapterPlan | undefined>(undefined)
   const chunkPromises = useRef(new Map<string, Promise<AudioCacheRecord | undefined>>())
   const ttsStartedAt = useRef<number | undefined>(undefined)
+  const runId = useRef(0)
 
   const chapter = chapters[chapterIndex]
   const model = models.find((item) => item.id === activeModelId) ?? models[0]
   const dialogueModel = autoDialogueVoice ? models.find((item) => item.id === dialogueModelId && item.id !== model?.id) : undefined
   const activeText = audio[audioIndex]?.text?.trim() ?? ''
+
+  function isCurrentPlan(plan: ChapterPlan): boolean {
+    return currentPlan.current?.runId === plan.runId && currentPlan.current.chapter.id === plan.chapter.id
+  }
 
   useEffect(() => {
     currentAudio.current = audio
@@ -189,12 +195,12 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     const pending = chunkPromises.current.get(key)
     if (pending) return pending
     const promise = synthesizeChapterChunk(plan.chapter, voiceModel, index, ({ phase: nextPhase, chunkIndex, totalChunks }) => {
-      if (currentPlan.current?.chapter.id === plan.chapter.id) {
+      if (isCurrentPlan(plan)) {
         setPhase(`${nextPhase} ${chunkIndex}/${totalChunks}`)
         setTtsProgress({ done: chunkIndex, total: totalChunks })
       }
     }).then((record) => {
-      if (record && currentPlan.current?.chapter.id === plan.chapter.id) appendGeneratedAudio(record)
+      if (record && isCurrentPlan(plan)) appendGeneratedAudio(record)
       return record
     }).finally(() => { chunkPromises.current.delete(key) })
     chunkPromises.current.set(key, promise)
@@ -206,14 +212,14 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       try {
         await ensureChunk(plan, index)
       } catch (error) {
-        if (currentPlan.current?.chapter.id === plan.chapter.id) {
+        if (isCurrentPlan(plan)) {
           setPhase(`第 ${index + 1}/${plan.totalChunks} 段生成失败`)
           onNotice(error instanceof Error ? error.message : String(error))
         }
         return
       }
     }
-    if (currentPlan.current?.chapter.id === plan.chapter.id) setPhase(`当前章节已全部生成，共 ${plan.totalChunks} 个文本块`)
+    if (isCurrentPlan(plan)) setPhase(`当前章节已全部生成，共 ${plan.totalChunks} 个文本块`)
   }
 
   async function handleAudioEnded() {
@@ -283,9 +289,9 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   async function startChapter(nextIndex: number, autoPlay = false) {
     const nextChapter = chapters[nextIndex]
-    if (!nextChapter || !model || busy) return
+    if (!nextChapter || !model) return
     const totalChunks = splitIntoChunks(nextChapter.text).length
-    const plan: ChapterPlan = { chapter: nextChapter, model, dialogueModel, totalChunks }
+    const plan: ChapterPlan = { runId: ++runId.current, chapter: nextChapter, model, dialogueModel, totalChunks }
     audioElement.current?.pause()
     setPlaying(false)
     setChapterIndex(nextIndex)
@@ -305,18 +311,20 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     try {
       const first = await ensureChunk(plan, 0)
       if (!first) throw new Error('当前章节没有可朗读文本')
+      if (!isCurrentPlan(plan)) return
       currentAudioIndex.current = 0
       setPhase(`首个文本块已就绪（1/${totalChunks}），正在准备播放`)
       if (autoPlay) await playAudioIndex(0, currentAudio.current)
       void continueGenerating(plan, 1)
       void prewarmNext(nextIndex)
     } catch (error) {
+      if (!isCurrentPlan(plan)) return
       const detail = error instanceof Error ? error.message : String(error)
       setPhase('TTS 生成失败')
       setErrorDetail(detail)
       onNotice(detail)
     } finally {
-      setBusy(false)
+      if (isCurrentPlan(plan)) setBusy(false)
     }
   }
 
@@ -325,7 +333,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     if (!nextChapter || !model || prewarming.current.has(nextChapter.id)) return
     prewarming.current.add(nextChapter.id)
     try {
-      const plan: ChapterPlan = { chapter: nextChapter, model, dialogueModel, totalChunks: splitIntoChunks(nextChapter.text).length }
+      const plan: ChapterPlan = { runId: -runId.current, chapter: nextChapter, model, dialogueModel, totalChunks: splitIntoChunks(nextChapter.text).length }
       await continueGenerating(plan, 0)
     } catch {
       // 下一章是预生成，失败时播放到该章再提示，不打断当前播放。
@@ -410,11 +418,12 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   return <div className="reader-page">
     <div className="reader-header"><button className="text-button" onClick={onBack}>← 书架</button><span className="chip">{chapterIndex + 1} / {chapters.length}</span></div>
-    <div className="reader-title"><div className="eyebrow accent">READING LOCALLY</div><h3>{book.title}</h3><div className="chapter-tools"><select value={chapterIndex} onChange={(event) => void startChapter(Number(event.target.value))}>{chapters.map((item) => <option value={item.index} key={item.id}>{item.title}</option>)}</select><button className="chapter-list-button" onClick={() => setShowChapterList((visible) => !visible)}>章节目录</button></div></div>
-    {showChapterList && <div className="chapter-drawer"><div className="chapter-drawer-head"><strong>全部章节</strong><button onClick={() => setShowChapterList(false)}>关闭</button></div><div className="chapter-list">{chapters.map((item) => <button className={item.index === chapterIndex ? 'current' : ''} key={item.id} onClick={() => { setShowChapterList(false); void startChapter(item.index, playing) }}><span>{String(item.index + 1).padStart(3, '0')}</span><em>{item.title}</em></button>)}</div></div>}
+    <div className="reader-title"><div className="eyebrow accent">READING LOCALLY</div><h3>{book.title}</h3><p className="reader-chapter-label">第 {chapterIndex + 1} 章 · {chapter?.title}</p></div>
     <div className="reader-page-nav"><button onClick={() => turnPage(-1)}>↑ 上一页</button><span>可滑动阅读</span><button onClick={() => turnPage(1)}>下一页 ↓</button></div>
     <article className="reader-text"><h4>{chapter?.title}</h4>{chapter?.text.split(/\n+/).filter(Boolean).map((paragraph, index) => renderParagraph(paragraph, index))}</article>
     <div className="player-panel">
+      <div className="player-top-row"><span className="player-chapter-title">第 {chapterIndex + 1} / {chapters.length} 章</span><button className="chapter-list-button" onClick={() => setShowChapterList((visible) => !visible)}>章节目录</button></div>
+      {showChapterList && <div className="chapter-drawer"><div className="chapter-drawer-head"><strong>全部章节</strong><button onClick={() => setShowChapterList(false)}>关闭</button></div><div className="chapter-list">{chapters.map((item, position) => <button className={position === chapterIndex ? 'current' : ''} key={item.id} onClick={() => { setShowChapterList(false); void startChapter(position, playing) }}><span>{String(position + 1).padStart(3, '0')}</span><em>{item.title}</em></button>)}</div></div>}
       <div className="player-status"><span className={playing ? 'pulse' : 'offline-dot'} />{phase}</div>
       {activeText && <div className="now-reading">正在朗读：{activeText}</div>}
       {ttsProgress.total > 0 && <div className="tts-progress"><span style={{ width: `${Math.round((ttsProgress.done / ttsProgress.total) * 100)}%` }} /><small>本章音频 {ttsProgress.done}/{ttsProgress.total} 段 · 已耗时 {ttsElapsed} 秒</small></div>}
@@ -424,6 +433,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       <div className="player-controls"><button onClick={() => void moveChapter(-1)} disabled={chapterIndex === 0}>上一章</button><button className="play-button" onClick={() => void handlePlay()} disabled={busy}>{playing ? '暂停' : busy ? `生成 ${Math.max(1, ttsProgress.done + 1)}/${ttsProgress.total}…` : '播放'}</button><button onClick={() => void moveChapter(1)} disabled={chapterIndex === chapters.length - 1}>下一章</button></div>
       <div className="speed-row"><span>倍速</span>{[0.8, 1, 1.25, 1.5, 2].map((value) => <button className={rate === value ? 'selected' : ''} key={value} onClick={() => void changeRate(value)}>{value}x</button>)}</div>
       {models.length > 0 && <div className="voice-settings"><label><span>旁白人声</span><select value={model?.id ?? ''} disabled={busy} onChange={(event) => void changeNarrationModel(event.target.value)}>{models.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="dialogue-toggle"><input type="checkbox" checked={autoDialogueVoice} disabled={busy || models.length < 2} onChange={(event) => void changeDialogueVoice(event.target.checked)} /><span>引号对白使用另一人声</span></label>{autoDialogueVoice && models.length > 1 && <label><span>对白人声</span><select value={dialogueModelId} disabled={busy} onChange={(event) => void changeDialogueVoice(true, event.target.value)}>{models.filter((item) => item.id !== model?.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}</div>}
+      {model && /x[_-]?low/i.test(model.name) && <small className="voice-hint">当前是 x_low 音质，声调较弱；下载 medium 模型后可在这里切换为更自然的人声。</small>}
       {!model && <small>还没有可用模型：先在线下载中文 Piper 模型，之后可以完全离线生成。</small>}
     </div>
     <audio ref={audioElement} preload="auto" />

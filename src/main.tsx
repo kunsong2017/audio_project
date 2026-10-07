@@ -10,7 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.1.1'
+const APP_VERSION = 'v1.1.2'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -134,7 +134,7 @@ function App() {
 }
 
 function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[]; onChanged: () => Promise<void>; onNotice: (value: string) => void }) {
-  const [url, setUrl] = useState('https://hf-mirror.com/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/x_low/zh_CN-huayan-x_low.onnx?download=true')
+  const [url, setUrl] = useState('https://hf-mirror.com/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx?download=true')
   const [selectedId, setSelectedId] = useState('')
   const [phase, setPhase] = useState('准备就绪')
   const [downloadProgress, setDownloadProgress] = useState<number>()
@@ -168,7 +168,7 @@ function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[];
     <div className="panel model-panel">
       <label className="field-label">ONNX 模型直链 <span>不会上传小说</span></label>
       <div className="input-row"><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://.../tts-model.onnx" inputMode="url" /><button disabled={busy} onClick={() => void handleDownload()}>{busy && downloadProgress !== undefined ? `${Math.round(downloadProgress * 100)}%` : '下载并缓存'}</button></div>
-      <small>建议使用预填的 Piper 中文模型地址。下载时会同时缓存 .onnx.json 配置；模型、配置和音素 WASM 齐全后，断网也能在书架中阅读和听书。</small>
+      <small>建议使用预填的 medium 中文模型，声调和停顿比 x_low 更自然。下载时会同时缓存 .onnx.json 配置；模型、配置和音素 WASM 齐全后，断网也能在书架中阅读和听书。</small>
       {models.length > 0 && <div className="cached-models"><span className="field-label">本机模型</span>{models.map((model) => <button key={model.id} className={`model-item ${selected?.id === model.id ? 'selected' : ''}`} onClick={() => setSelectedId(model.id)}><span>{model.name}</span><small>{formatBytes(model.bytes)} · 可离线</small></button>)}</div>}
     </div>
     <div className="benchmark-action"><div><span className="eyebrow">TEST TEXT</span><strong>100 / 500 / 1000 字</strong></div><button className="primary-button" disabled={busy || !selected} onClick={() => void handleRun()}>{busy ? phase : '运行本地 benchmark'} <span>→</span></button></div>
