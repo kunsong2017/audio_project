@@ -27,7 +27,7 @@ export interface TtsProgress {
 }
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
-const AUDIO_VERSION = 2
+const AUDIO_VERSION = 3
 const MAX_CHUNK_LENGTH = 220
 const CHUNK_TIMEOUT_MS = 90_000
 type TtsStage = (phase: string) => void
@@ -38,7 +38,7 @@ function splitIntoChunks(text: string, maxLength = MAX_CHUNK_LENGTH): string[] {
   const trimmed = text.trim()
   if (!trimmed) return []
   if (trimmed.length <= maxLength) return [trimmed]
-  const sentences = trimmed.match(/[^。！？!?…\n]+[。！？!?…\n]*/g) ?? [trimmed]
+  const sentences = trimmed.match(/[^。！？!?…，,、；;：:\n]+[。！？!?…，,、；;：:\n]*/g) ?? [trimmed]
   const chunks: string[] = []
   for (const sentence of sentences) {
     if (sentence.length <= maxLength) {
@@ -217,11 +217,15 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
 
 function addSentencePause(pcm: Float32Array, text: string, sampleRate: number): Float32Array {
   const ending = text.trim()
-  const pauseSeconds = /[。！？!?…](?:[”」』）)】]*)$/.test(ending)
-    ? 0.28
-    : /[，,、；;：:](?:[”」』）)】]*)$/.test(ending)
-      ? 0.14
-      : 0
+  const pauseSeconds = /[！？!?](?:[”」』）)】]*)$/.test(ending)
+    ? 0.42
+    : /[。…](?:[”」』）)】]*)$/.test(ending)
+      ? 0.34
+      : /[；;：:](?:[”」』）)】]*)$/.test(ending)
+        ? 0.20
+        : /[，,、](?:[”」』）)】]*)$/.test(ending)
+          ? 0.15
+          : 0
   if (!pauseSeconds) return pcm
   const silence = new Float32Array(Math.round(sampleRate * pauseSeconds))
   const result = new Float32Array(pcm.length + silence.length)
