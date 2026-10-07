@@ -57,6 +57,7 @@ export interface AppSettings {
   playbackRate: number
   activeModelId?: string
   dialogueModelId?: string
+  dialogueModelIds?: string[]
   autoDialogueVoice?: boolean
 }
 

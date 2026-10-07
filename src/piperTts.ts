@@ -27,7 +27,7 @@ export interface TtsProgress {
 }
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
-const AUDIO_VERSION = 3
+const AUDIO_VERSION = 4
 const MAX_CHUNK_LENGTH = 220
 const CHUNK_TIMEOUT_MS = 90_000
 type TtsStage = (phase: string) => void
@@ -218,13 +218,13 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
 function addSentencePause(pcm: Float32Array, text: string, sampleRate: number): Float32Array {
   const ending = text.trim()
   const pauseSeconds = /[！？!?](?:[”」』）)】]*)$/.test(ending)
-    ? 0.42
+    ? 0.28
     : /[。…](?:[”」』）)】]*)$/.test(ending)
-      ? 0.34
+      ? 0.22
       : /[；;：:](?:[”」』）)】]*)$/.test(ending)
-        ? 0.20
+        ? 0.12
         : /[，,、](?:[”」』）)】]*)$/.test(ending)
-          ? 0.15
+          ? 0.08
           : 0
   if (!pauseSeconds) return pcm
   const silence = new Float32Array(Math.round(sampleRate * pauseSeconds))

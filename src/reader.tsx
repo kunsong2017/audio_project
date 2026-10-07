@@ -15,7 +15,7 @@ interface ChapterPlan {
   runId: number
   chapter: ChapterRecord
   model: ModelRecord
-  dialogueModel?: ModelRecord
+  dialogueModels?: ModelRecord[]
   totalChunks: number
 }
 
@@ -34,9 +34,10 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   const [ttsElapsed, setTtsElapsed] = useState(0)
   const [errorDetail, setErrorDetail] = useState('')
   const [activeModelId, setActiveModelId] = useState('')
-  const [dialogueModelId, setDialogueModelId] = useState('')
+  const [dialogueModelIds, setDialogueModelIds] = useState<string[]>([])
   const [autoDialogueVoice, setAutoDialogueVoice] = useState(false)
   const [showChapterList, setShowChapterList] = useState(false)
+  const [playerExpanded, setPlayerExpanded] = useState(false)
   const audioElement = useRef<HTMLAudioElement>(null)
   const activeTextRef = useRef<HTMLElement>(null)
   const urls = useRef<string[]>([])
@@ -53,7 +54,12 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   const chapter = chapters[chapterIndex]
   const model = models.find((item) => item.id === activeModelId) ?? models[0]
-  const dialogueModel = autoDialogueVoice ? models.find((item) => item.id === dialogueModelId && item.id !== model?.id) : undefined
+  const dialogueOptions = models.filter((item) => item.id !== model?.id)
+  const dialogueModels = autoDialogueVoice
+    ? [...new Set(dialogueModelIds)]
+      .map((id) => models.find((item) => item.id === id))
+      .filter((item): item is ModelRecord => Boolean(item && item.id !== model?.id))
+    : []
   const activeText = audio[audioIndex]?.text?.trim() ?? ''
 
   function isCurrentPlan(plan: ChapterPlan): boolean {
@@ -85,7 +91,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       setChapterIndex(Math.min(book.currentChapter, Math.max(0, items.length - 1)))
       setRate(settings.playbackRate || 1)
       setActiveModelId(settings.activeModelId ?? models[0]?.id ?? '')
-      setDialogueModelId(settings.dialogueModelId ?? '')
+      setDialogueModelIds(settings.dialogueModelIds ?? (settings.dialogueModelId ? [settings.dialogueModelId] : []))
       setAutoDialogueVoice(settings.autoDialogueVoice ?? false)
     })
     return () => { active = false }
@@ -101,7 +107,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   useEffect(() => {
     if (!activeText) return
-    const timer = window.setTimeout(() => activeTextRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
+    const timer = window.setTimeout(() => activeTextRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80)
     return () => window.clearTimeout(timer)
   }, [activeText, chapterIndex])
 
@@ -169,22 +175,25 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     setAudio(next)
   }
 
-  function chunkUsesDialogue(plan: ChapterPlan, index: number): boolean {
-    if (!plan.dialogueModel) return false
+  function dialogueModelForChunk(plan: ChapterPlan, index: number): ModelRecord | undefined {
+    if (!plan.dialogueModels?.length) return undefined
     let inDialogue = false
-    return splitIntoChunks(plan.chapter.text).slice(0, index + 1).some((text, chunkIndex) => {
-      const wasInDialogue = inDialogue
+    let dialogueSegment = -1
+    for (const [chunkIndex, text] of splitIntoChunks(plan.chapter.text).entries()) {
       const opens = /[“「『]/.test(text)
       const closes = /[”」』]/.test(text)
+      if (opens && !inDialogue) dialogueSegment += 1
       if (opens) inDialogue = true
-      const isDialogue = wasInDialogue || opens
+      const isDialogue = inDialogue
       if (closes) inDialogue = false
-      return chunkIndex === index && isDialogue
-    })
+      if (chunkIndex === index) return isDialogue ? plan.dialogueModels[dialogueSegment % plan.dialogueModels.length] : undefined
+      if (chunkIndex > index) break
+    }
+    return undefined
   }
 
   function voiceModelForChunk(plan: ChapterPlan, index: number): ModelRecord {
-    return chunkUsesDialogue(plan, index) ? plan.dialogueModel ?? plan.model : plan.model
+    return dialogueModelForChunk(plan, index) ?? plan.model
   }
 
   function ensureChunk(plan: ChapterPlan, index: number): Promise<AudioCacheRecord | undefined> {
@@ -291,7 +300,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     const nextChapter = chapters[nextIndex]
     if (!nextChapter || !model) return
     const totalChunks = splitIntoChunks(nextChapter.text).length
-    const plan: ChapterPlan = { runId: ++runId.current, chapter: nextChapter, model, dialogueModel, totalChunks }
+    const plan: ChapterPlan = { runId: ++runId.current, chapter: nextChapter, model, dialogueModels, totalChunks }
     audioElement.current?.pause()
     setPlaying(false)
     setChapterIndex(nextIndex)
@@ -333,7 +342,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     if (!nextChapter || !model || prewarming.current.has(nextChapter.id)) return
     prewarming.current.add(nextChapter.id)
     try {
-      const plan: ChapterPlan = { runId: -runId.current, chapter: nextChapter, model, dialogueModel, totalChunks: splitIntoChunks(nextChapter.text).length }
+      const plan: ChapterPlan = { runId: -runId.current, chapter: nextChapter, model, dialogueModels, totalChunks: splitIntoChunks(nextChapter.text).length }
       await continueGenerating(plan, 0)
     } catch {
       // 下一章是预生成，失败时播放到该章再提示，不打断当前播放。
@@ -396,12 +405,22 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     await resetAudioAfterVoiceChange('旁白人声已切换，点击播放重新生成')
   }
 
-  async function changeDialogueVoice(enabled: boolean, nextModelId = dialogueModelId) {
-    const selectedDialogueModelId = nextModelId || models.find((item) => item.id !== model?.id)?.id || ''
+  async function changeDialogueVoice(enabled: boolean, nextModelIds = dialogueModelIds) {
+    const selectedDialogueModelIds = [...new Set(nextModelIds)].filter((id) => id && id !== model?.id && models.some((item) => item.id === id))
+    if (enabled && selectedDialogueModelIds.length === 0) {
+      const fallback = models.find((item) => item.id !== model?.id)
+      if (fallback) selectedDialogueModelIds.push(fallback.id)
+    }
     setAutoDialogueVoice(enabled)
-    setDialogueModelId(selectedDialogueModelId)
-    await db.saveSettings({ ...(await db.getSettings()), autoDialogueVoice: enabled, dialogueModelId: selectedDialogueModelId })
+    setDialogueModelIds(selectedDialogueModelIds)
+    await db.saveSettings({ ...(await db.getSettings()), autoDialogueVoice: enabled, dialogueModelIds: selectedDialogueModelIds, dialogueModelId: selectedDialogueModelIds[0] })
     await resetAudioAfterVoiceChange(enabled ? '对白将使用独立人声，点击播放重新生成' : '已关闭对白独立人声')
+  }
+
+  async function changeDialogueVoiceSlot(slot: number, nextModelId: string) {
+    const nextModelIds = [...dialogueModelIds]
+    nextModelIds[slot] = nextModelId
+    await changeDialogueVoice(true, nextModelIds)
   }
 
   function turnPage(direction: -1 | 1) {
@@ -421,20 +440,26 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     <div className="reader-title"><div className="eyebrow accent">READING LOCALLY</div><h3>{book.title}</h3><p className="reader-chapter-label">第 {chapterIndex + 1} 章 · {chapter?.title}</p></div>
     <div className="reader-page-nav"><button onClick={() => turnPage(-1)}>↑ 上一页</button><span>可滑动阅读</span><button onClick={() => turnPage(1)}>下一页 ↓</button></div>
     <article className="reader-text"><h4>{chapter?.title}</h4>{chapter?.text.split(/\n+/).filter(Boolean).map((paragraph, index) => renderParagraph(paragraph, index))}</article>
-    <div className="player-panel">
-      <div className="player-top-row"><span className="player-chapter-title">第 {chapterIndex + 1} / {chapters.length} 章</span><button className="chapter-list-button" onClick={() => setShowChapterList((visible) => !visible)}>章节目录</button></div>
+    <div className={`player-panel ${playerExpanded ? 'expanded' : 'collapsed'}`}>
+      <div className="mini-player">
+        <button className="mini-toggle" aria-expanded={playerExpanded} onClick={() => setPlayerExpanded((expanded) => !expanded)}><span className={playing ? 'pulse' : 'offline-dot'} /><span><strong>第 {chapterIndex + 1} / {chapters.length} 章</strong><small>{busy ? phase : playing ? '正在播放' : '点击展开播放器'}</small></span></button>
+        <button className="mini-chapters" onClick={() => { setPlayerExpanded(true); setShowChapterList(true) }}>章节</button>
+        <button className="mini-play" onClick={() => void handlePlay()} disabled={busy} aria-label={playing ? '暂停' : '播放'}>{playing ? 'Ⅱ' : '▶'}</button>
+      </div>
+      {playerExpanded && <>
+      <div className="player-top-row"><span className="player-chapter-title">播放控制</span><div className="player-top-actions"><button className="chapter-list-button" onClick={() => setShowChapterList((visible) => !visible)}>章节目录</button><button className="collapse-button" onClick={() => setPlayerExpanded(false)}>收起</button></div></div>
       {showChapterList && <div className="chapter-drawer"><div className="chapter-drawer-head"><strong>全部章节</strong><button onClick={() => setShowChapterList(false)}>关闭</button></div><div className="chapter-list">{chapters.map((item, position) => <button className={position === chapterIndex ? 'current' : ''} key={item.id} onClick={() => { setShowChapterList(false); void startChapter(position, playing) }}><span>{String(position + 1).padStart(3, '0')}</span><em>{item.title}</em></button>)}</div></div>}
       <div className="player-status"><span className={playing ? 'pulse' : 'offline-dot'} />{phase}</div>
-      {activeText && <div className="now-reading">正在朗读：{activeText}</div>}
       {ttsProgress.total > 0 && <div className="tts-progress"><span style={{ width: `${Math.round((ttsProgress.done / ttsProgress.total) * 100)}%` }} /><small>本章音频 {ttsProgress.done}/{ttsProgress.total} 段 · 已耗时 {ttsElapsed} 秒</small></div>}
       {errorDetail && <div className="tts-error">{errorDetail}</div>}
       <input className="seek" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(progress, duration || 0)} onChange={(event) => { const value = Number(event.target.value); setProgress(value); if (audioElement.current) audioElement.current.currentTime = value }} />
       <div className="time-row"><span>{formatTime(progress)}</span><span>{formatTime(duration)}</span></div>
       <div className="player-controls"><button onClick={() => void moveChapter(-1)} disabled={chapterIndex === 0}>上一章</button><button className="play-button" onClick={() => void handlePlay()} disabled={busy}>{playing ? '暂停' : busy ? `生成 ${Math.max(1, ttsProgress.done + 1)}/${ttsProgress.total}…` : '播放'}</button><button onClick={() => void moveChapter(1)} disabled={chapterIndex === chapters.length - 1}>下一章</button></div>
       <div className="speed-row"><span>倍速</span>{[0.8, 1, 1.25, 1.5, 2].map((value) => <button className={rate === value ? 'selected' : ''} key={value} onClick={() => void changeRate(value)}>{value}x</button>)}</div>
-      {models.length > 0 && <div className="voice-settings"><label><span>旁白人声</span><select value={model?.id ?? ''} disabled={busy} onChange={(event) => void changeNarrationModel(event.target.value)}>{models.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="dialogue-toggle"><input type="checkbox" checked={autoDialogueVoice} disabled={busy || models.length < 2} onChange={(event) => void changeDialogueVoice(event.target.checked)} /><span>引号对白使用另一人声</span></label>{autoDialogueVoice && models.length > 1 && <label><span>对白人声</span><select value={dialogueModelId} disabled={busy} onChange={(event) => void changeDialogueVoice(true, event.target.value)}>{models.filter((item) => item.id !== model?.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}</div>}
+      {models.length > 0 && <div className="voice-settings"><label><span>旁白人声</span><select value={model?.id ?? ''} disabled={busy} onChange={(event) => void changeNarrationModel(event.target.value)}>{models.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="dialogue-toggle"><input type="checkbox" checked={autoDialogueVoice} disabled={busy || models.length < 2} onChange={(event) => void changeDialogueVoice(event.target.checked)} /><span>对白使用独立声音并按段轮换</span></label>{autoDialogueVoice && dialogueOptions.length > 0 && <><label><span>对白声音 1</span><select value={dialogueModelIds[0] && dialogueOptions.some((item) => item.id === dialogueModelIds[0]) ? dialogueModelIds[0] : dialogueOptions[0].id} disabled={busy} onChange={(event) => void changeDialogueVoiceSlot(0, event.target.value)}>{dialogueOptions.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>{dialogueOptions.length > 1 && <label><span>对白声音 2</span><select value={dialogueModelIds[1] && dialogueOptions.some((item) => item.id === dialogueModelIds[1]) ? dialogueModelIds[1] : dialogueOptions[1].id} disabled={busy} onChange={(event) => void changeDialogueVoiceSlot(1, event.target.value)}>{dialogueOptions.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<small className="voice-hint dialogue-hint">按每段引号对白轮换声音 1 / 2；如果只下载了一个对白模型，所有对白会使用同一声音。</small></>}</div>}
       {model && /x[_-]?low/i.test(model.name) && <small className="voice-hint">当前是 x_low 音质，声调较弱；下载 medium 模型后可在这里切换为更自然的人声。</small>}
       {!model && <small>还没有可用模型：先在线下载中文 Piper 模型，之后可以完全离线生成。</small>}
+      </>}
     </div>
     <audio ref={audioElement} preload="auto" />
   </div>
