@@ -54,11 +54,14 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   const chapter = chapters[chapterIndex]
   const model = models.find((item) => item.id === activeModelId) ?? models[0]
-  const dialogueOptions = models.filter((item) => item.id !== model?.id)
+  const dialogueOptions = models
+  const effectiveDialogueModelIds = autoDialogueVoice
+    ? [...new Set([...dialogueModelIds, ...models.map((item) => item.id)])].slice(0, 2)
+    : []
   const dialogueModels = autoDialogueVoice
-    ? [...new Set(dialogueModelIds)]
+    ? effectiveDialogueModelIds
       .map((id) => models.find((item) => item.id === id))
-      .filter((item): item is ModelRecord => Boolean(item && item.id !== model?.id))
+      .filter((item): item is ModelRecord => Boolean(item))
     : []
   const activeText = audio[audioIndex]?.text?.trim() ?? ''
 
@@ -179,15 +182,48 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     if (!plan.dialogueModels?.length) return undefined
     let inDialogue = false
     let dialogueSegment = -1
+    let activeSpeakerSlot: number | undefined
+    const speakerSlots = new Map<string, number>()
     for (const [chunkIndex, text] of splitIntoChunks(plan.chapter.text).entries()) {
-      const opens = /[“「『]/.test(text)
-      const closes = /[”」』]/.test(text)
-      if (opens && !inDialogue) dialogueSegment += 1
-      if (opens) inDialogue = true
-      const isDialogue = inDialogue
-      if (closes) inDialogue = false
-      if (chunkIndex === index) return isDialogue ? plan.dialogueModels[dialogueSegment % plan.dialogueModels.length] : undefined
-      if (chunkIndex > index) break
+      let chunkDialogue = inDialogue
+      let chunkSpeakerSlot = activeSpeakerSlot
+      let quoteStart = -1
+      const labeledSpeaker = speakerAtStart(text)
+      if (labeledSpeaker) {
+        chunkDialogue = true
+        if (!speakerSlots.has(labeledSpeaker)) speakerSlots.set(labeledSpeaker, speakerSlots.size % plan.dialogueModels.length)
+        chunkSpeakerSlot = speakerSlots.get(labeledSpeaker)
+      }
+      for (let charIndex = 0; charIndex < text.length; charIndex += 1) {
+        const character = text[charIndex]
+        const opens = /[“「『"]/.test(character)
+        const closes = /[”」』"]/.test(character)
+        if (opens && !inDialogue) {
+          inDialogue = true
+          chunkDialogue = true
+          dialogueSegment += 1
+          quoteStart = charIndex
+          const speaker = speakerBeforeQuote(text, quoteStart)
+          if (speaker) {
+            if (!speakerSlots.has(speaker)) speakerSlots.set(speaker, speakerSlots.size % plan.dialogueModels.length)
+            chunkSpeakerSlot = speakerSlots.get(speaker)
+          } else {
+            chunkSpeakerSlot = dialogueSegment % plan.dialogueModels.length
+          }
+          activeSpeakerSlot = chunkSpeakerSlot
+          continue
+        }
+        if (inDialogue) chunkDialogue = true
+        if (closes && inDialogue) {
+          inDialogue = false
+          activeSpeakerSlot = undefined
+        }
+      }
+      if (chunkIndex === index) {
+        return chunkDialogue
+          ? plan.dialogueModels[(chunkSpeakerSlot ?? dialogueSegment) % plan.dialogueModels.length]
+          : undefined
+      }
     }
     return undefined
   }
@@ -406,10 +442,12 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   }
 
   async function changeDialogueVoice(enabled: boolean, nextModelIds = dialogueModelIds) {
-    const selectedDialogueModelIds = [...new Set(nextModelIds)].filter((id) => id && id !== model?.id && models.some((item) => item.id === id))
-    if (enabled && selectedDialogueModelIds.length === 0) {
-      const fallback = models.find((item) => item.id !== model?.id)
-      if (fallback) selectedDialogueModelIds.push(fallback.id)
+    const selectedDialogueModelIds = [...new Set(nextModelIds)].filter((id) => id && models.some((item) => item.id === id))
+    if (enabled) {
+      for (const candidate of models) {
+        if (selectedDialogueModelIds.length >= 2) break
+        if (!selectedDialogueModelIds.includes(candidate.id)) selectedDialogueModelIds.push(candidate.id)
+      }
     }
     setAutoDialogueVoice(enabled)
     setDialogueModelIds(selectedDialogueModelIds)
@@ -456,7 +494,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       <div className="time-row"><span>{formatTime(progress)}</span><span>{formatTime(duration)}</span></div>
       <div className="player-controls"><button onClick={() => void moveChapter(-1)} disabled={chapterIndex === 0}>上一章</button><button className="play-button" onClick={() => void handlePlay()} disabled={busy}>{playing ? '暂停' : busy ? `生成 ${Math.max(1, ttsProgress.done + 1)}/${ttsProgress.total}…` : '播放'}</button><button onClick={() => void moveChapter(1)} disabled={chapterIndex === chapters.length - 1}>下一章</button></div>
       <div className="speed-row"><span>倍速</span>{[0.8, 1, 1.25, 1.5, 2].map((value) => <button className={rate === value ? 'selected' : ''} key={value} onClick={() => void changeRate(value)}>{value}x</button>)}</div>
-      {models.length > 0 && <div className="voice-settings"><label><span>旁白人声</span><select value={model?.id ?? ''} disabled={busy} onChange={(event) => void changeNarrationModel(event.target.value)}>{models.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="dialogue-toggle"><input type="checkbox" checked={autoDialogueVoice} disabled={busy || models.length < 2} onChange={(event) => void changeDialogueVoice(event.target.checked)} /><span>对白使用独立声音并按段轮换</span></label>{autoDialogueVoice && dialogueOptions.length > 0 && <><label><span>对白声音 1</span><select value={dialogueModelIds[0] && dialogueOptions.some((item) => item.id === dialogueModelIds[0]) ? dialogueModelIds[0] : dialogueOptions[0].id} disabled={busy} onChange={(event) => void changeDialogueVoiceSlot(0, event.target.value)}>{dialogueOptions.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>{dialogueOptions.length > 1 && <label><span>对白声音 2</span><select value={dialogueModelIds[1] && dialogueOptions.some((item) => item.id === dialogueModelIds[1]) ? dialogueModelIds[1] : dialogueOptions[1].id} disabled={busy} onChange={(event) => void changeDialogueVoiceSlot(1, event.target.value)}>{dialogueOptions.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<small className="voice-hint dialogue-hint">按每段引号对白轮换声音 1 / 2；如果只下载了一个对白模型，所有对白会使用同一声音。</small></>}</div>}
+      {models.length > 0 && <div className="voice-settings"><label><span>旁白人声</span><select value={model?.id ?? ''} disabled={busy} onChange={(event) => void changeNarrationModel(event.target.value)}>{models.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="dialogue-toggle"><input type="checkbox" checked={autoDialogueVoice} disabled={busy || models.length < 2} onChange={(event) => void changeDialogueVoice(event.target.checked)} /><span>对白使用独立声音并按角色轮换</span></label>{autoDialogueVoice && dialogueOptions.length > 0 && <><label><span>对白声音 1</span><select value={dialogueModelIds[0] && dialogueOptions.some((item) => item.id === dialogueModelIds[0]) ? dialogueModelIds[0] : dialogueOptions[0].id} disabled={busy} onChange={(event) => void changeDialogueVoiceSlot(0, event.target.value)}>{dialogueOptions.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>{dialogueOptions.length > 1 && <label><span>对白声音 2</span><select value={dialogueModelIds[1] && dialogueOptions.some((item) => item.id === dialogueModelIds[1]) ? dialogueModelIds[1] : dialogueOptions[1].id} disabled={busy} onChange={(event) => void changeDialogueVoiceSlot(1, event.target.value)}>{dialogueOptions.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<small className="voice-hint dialogue-hint">优先按“张三说：”等角色名绑定声音；没有角色名时按对白段轮换。至少准备两个不同模型，才能听出两种声音。</small></>}</div>}
       {model && /x[_-]?low/i.test(model.name) && <small className="voice-hint">当前是 x_low 音质，声调较弱；下载 medium 模型后可在这里切换为更自然的人声。</small>}
       {!model && <small>还没有可用模型：先在线下载中文 Piper 模型，之后可以完全离线生成。</small>}
       </>}
@@ -469,4 +507,16 @@ function formatTime(value: number): string {
   if (!Number.isFinite(value)) return '0:00'
   const seconds = Math.max(0, Math.floor(value))
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+function speakerBeforeQuote(text: string, quoteStart: number): string | undefined {
+  if (quoteStart <= 0) return undefined
+  const prefix = text.slice(0, quoteStart)
+  return speakerAtStart(prefix.replace(/^.*[。！？!?；;]\s*/s, ''))
+    ?? prefix.match(/([\u4e00-\u9fffA-Za-z0-9·]{1,16})(?:说道|说|问道|答道|喊道|叫道|笑道|怒道|冷冷地道|开口道)[：:，,]?\s*$/)?.[1]
+}
+
+function speakerAtStart(text: string): string | undefined {
+  const match = text.match(/^\s*([\u4e00-\u9fffA-Za-z0-9·]{1,16})(?:说|问|答|喊|叫|笑|怒)?(?:道)?[：:]\s*/)
+  return match?.[1]
 }

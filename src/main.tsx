@@ -10,7 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.2.0'
+const APP_VERSION = 'v1.3.0'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -18,6 +18,38 @@ const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'library', label: '书架', icon: '▤' },
   { id: 'storage', label: '存储', icon: '⌁' },
 ]
+
+function bookFingerprint(chapters: { index: number; title: string; text: string }[]): string {
+  if (chapters.length === 0) return ''
+  const source = [...chapters]
+    .sort((a, b) => a.index - b.index)
+    .map((chapter) => `${chapter.title}\n${chapter.text}`.replace(/\s+/g, ''))
+    .join('\u0001')
+  let hash = 2166136261
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${hash >>> 0}:${source.length}`
+}
+
+function deduplicateBooks(books: BookRecord[], chapters: { bookId: string; index: number; title: string; text: string }[]): BookRecord[] {
+  const chaptersByBook = new Map<string, typeof chapters>()
+  chapters.forEach((chapter) => {
+    const items = chaptersByBook.get(chapter.bookId) ?? []
+    items.push(chapter)
+    chaptersByBook.set(chapter.bookId, items)
+  })
+  const seen = new Set<string>()
+  return books
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .filter((book) => {
+      const fingerprint = bookFingerprint(chaptersByBook.get(book.id) ?? [])
+      if (!fingerprint || seen.has(fingerprint)) return false
+      seen.add(fingerprint)
+      return true
+    })
+}
 
 function CapabilityPill({ label, ok }: { label: string; ok: boolean }) {
   return <span className={`capability ${ok ? 'ok' : 'warn'}`}><i />{label}</span>
@@ -36,8 +68,8 @@ function App() {
   const [updating, setUpdating] = useState(false)
 
   const refresh = async () => {
-    const [nextBooks, nextModels, nextStats] = await Promise.all([db.books(), db.models(), db.stats()])
-    setBooks(nextBooks.sort((a, b) => b.updatedAt - a.updatedAt))
+    const [nextBooks, nextModels, nextStats, nextChapters] = await Promise.all([db.books(), db.models(), db.stats(), db.chapters()])
+    setBooks(deduplicateBooks(nextBooks, nextChapters))
     setModels(nextModels.sort((a, b) => b.downloadedAt - a.downloadedAt))
     setStats(nextStats)
   }
@@ -120,7 +152,7 @@ function App() {
         </section>
         <div className="page-content">
           {tab === 'benchmark' && <BenchmarkPage models={models} onChanged={refresh} onNotice={setNotice} />}
-          {tab === 'import' && <ImportPage onImported={async (format) => { await refresh(); setTab('library'); setNotice(`${format} 已保存在本机，原始文件仍在 Files 中。`) }} onNotice={setNotice} />}
+          {tab === 'import' && <ImportPage onImported={async (format, duplicate, title) => { await refresh(); setTab('library'); setNotice(duplicate ? `《${title}》已在书架中，跳过重复导入。` : `${format} 已保存在本机，原始文件仍在 Files 中。`) }} onNotice={setNotice} />}
           {readingBook ? <ReaderPage book={readingBook} models={models} onBack={() => { setReadingBook(undefined); void refresh() }} onChanged={refresh} onNotice={setNotice} /> : tab === 'library' && <LibraryPage books={books} onOpen={(book) => setReadingBook(book)} />}
           {tab === 'storage' && <StoragePage stats={stats} models={models} onChanged={refresh} />}
         </div>
@@ -177,7 +209,7 @@ function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[];
   </>
 }
 
-function ImportPage({ onImported, onNotice }: { onImported: (format: string) => Promise<void>; onNotice: (message: string) => void }) {
+function ImportPage({ onImported, onNotice }: { onImported: (format: string, duplicate: boolean, title: string) => Promise<void>; onNotice: (message: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [fileName, setFileName] = useState('')
   const onFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -189,9 +221,18 @@ function ImportPage({ onImported, onNotice }: { onImported: (format: string) => 
       const parsed = isEpub
         ? await parseEpub(file)
         : parseTxt(file.name.replace(/\.txt$/i, ''), file.name, file.size, await file.text())
+      const [existingBooks, existingChapters] = await Promise.all([db.books(), db.chapters()])
+      const parsedFingerprint = bookFingerprint(parsed.chapters)
+      const duplicate = existingBooks
+        .map((book) => ({ book, chapters: existingChapters.filter((chapter) => chapter.bookId === book.id) }))
+        .find((item) => bookFingerprint(item.chapters) === parsedFingerprint)
+      if (duplicate) {
+        await onImported(isEpub ? 'EPUB' : 'TXT', true, duplicate.book.title)
+        return
+      }
       await db.saveBook(parsed.book)
       await Promise.all(parsed.chapters.map((chapter) => db.saveChapter(chapter)))
-      await onImported(isEpub ? 'EPUB' : 'TXT')
+      await onImported(isEpub ? 'EPUB' : 'TXT', false, parsed.book.title)
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error))
     } finally { setBusy(false); event.target.value = '' }
