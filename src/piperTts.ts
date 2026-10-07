@@ -7,6 +7,7 @@ interface PiperConfig {
   espeak: { voice: string }
   inference: { noise_scale: number; length_scale: number; noise_w: number }
   speaker_id_map?: Record<string, number>
+  phoneme_id_map?: Record<string, number[]>
 }
 
 interface PhonemizeModule {
@@ -140,8 +141,24 @@ async function phonemize(text: string, config: PiperConfig, onStage?: TtsStage):
       print: (data) => {
         if (settled) return
         try {
-          const parsed = JSON.parse(data) as { phoneme_ids?: number[] }
+          const parsed = JSON.parse(data) as { phoneme_ids?: number[]; phonemes?: string[] }
           if (!parsed.phoneme_ids) throw new Error('Piper 音素解析没有返回 phoneme_ids')
+          const phonemeMap = config.phoneme_id_map
+          if (phonemeMap && parsed.phonemes?.length === parsed.phoneme_ids.length) {
+            const mappedIds = parsed.phonemes.flatMap((phoneme) => phonemeMap[phoneme] ?? [])
+            if (!mappedIds.length) throw new Error('当前模型词表与中文音素结果不匹配')
+            settled = true
+            resolve(mappedIds)
+            return
+          }
+          if (phonemeMap) {
+            const validIds = new Set(Object.values(phonemeMap).flat())
+            const mappedIds = parsed.phoneme_ids.filter((id) => validIds.has(id))
+            if (!mappedIds.length) throw new Error('当前模型词表与中文音素结果不匹配')
+            settled = true
+            resolve(mappedIds)
+            return
+          }
           settled = true
           resolve(parsed.phoneme_ids)
         } catch (error) {
