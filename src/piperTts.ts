@@ -26,7 +26,9 @@ export interface TtsProgress {
 }
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
-const MAX_CHUNK_LENGTH = 400
+const MAX_CHUNK_LENGTH = 220
+const CHUNK_TIMEOUT_MS = 90_000
+type TtsStage = (phase: string) => void
 let phonemizeFactoryPromise: Promise<PhonemizeFactory> | undefined
 let sessionCache: { modelId: string; session: ort.InferenceSession } | undefined
 
@@ -83,11 +85,15 @@ async function loadConfig(model: ModelRecord): Promise<PiperConfig> {
   return config
 }
 
-async function loadSession(model: ModelRecord): Promise<ort.InferenceSession> {
-  if (sessionCache?.modelId === model.id) return sessionCache.session
+async function loadSession(model: ModelRecord, onStage?: TtsStage): Promise<ort.InferenceSession> {
+  if (sessionCache?.modelId === model.id) {
+    onStage?.('复用已加载的 ONNX 模型')
+    return sessionCache.session
+  }
   const record = (await db.modelData()).find((item) => item.id === model.id)
   if (!record) throw new Error('本地没有该模型，请先在线下载一次。')
   configureOrt()
+  onStage?.('加载 ONNX 模型（首次可能需要几十秒）')
   let session: ort.InferenceSession
   try {
     session = await ort.InferenceSession.create(await record.blob.arrayBuffer(), {
@@ -117,8 +123,9 @@ async function loadPhonemizeFactory(): Promise<PhonemizeFactory> {
   return phonemizeFactoryPromise
 }
 
-async function phonemize(text: string, config: PiperConfig): Promise<number[]> {
+async function phonemize(text: string, config: PiperConfig, onStage?: TtsStage): Promise<number[]> {
   const factory = await loadPhonemizeFactory()
+  onStage?.('解析中文音素')
   return new Promise<number[]>((resolve, reject) => {
     let settled = false
     void factory({
@@ -162,9 +169,9 @@ async function phonemize(text: string, config: PiperConfig): Promise<number[]> {
   })
 }
 
-async function synthesizeChunk(text: string, model: ModelRecord, config: PiperConfig): Promise<Blob> {
-  const session = await loadSession(model)
-  const phonemeIds = await phonemize(text, config)
+async function synthesizeChunk(text: string, model: ModelRecord, config: PiperConfig, onStage?: TtsStage): Promise<Blob> {
+  const session = await loadSession(model, onStage)
+  const phonemeIds = await phonemize(text, config, onStage)
   const inputIds = BigInt64Array.from(phonemeIds, (value) => BigInt(value))
   const feeds: Record<string, ort.Tensor> = {
     input: new ort.Tensor('int64', inputIds, [1, phonemeIds.length]),
@@ -176,6 +183,7 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
     ])),
   }
   if (Object.keys(config.speaker_id_map ?? {}).length > 0) feeds.sid = new ort.Tensor('int64', BigInt64Array.from([0n]))
+  onStage?.('WASM 推理生成音频')
   const outputs = await session.run(feeds)
   const output = outputs.output?.data
   if (!output || !(output instanceof Float32Array || output instanceof Float64Array)) throw new Error('Piper 推理没有返回音频输出')
@@ -225,16 +233,26 @@ export async function synthesizeChapterChunk(
   index: number,
   onProgress?: (progress: TtsProgress) => void,
 ): Promise<AudioCacheRecord | undefined> {
+  return withTimeout(synthesizeChapterChunkInner(chapter, model, index, onProgress), CHUNK_TIMEOUT_MS)
+}
+
+async function synthesizeChapterChunkInner(
+  chapter: ChapterRecord,
+  model: ModelRecord,
+  index: number,
+  onProgress?: (progress: TtsProgress) => void,
+): Promise<AudioCacheRecord | undefined> {
   const chunks = splitIntoChunks(chapter.text)
   if (!chunks[index]) return undefined
-  const existing = (await db.audioForChapter(chapter.id, model.id)).find((item) => item.chunkIndex === index)
+  const existing = (await db.audioForChapter(chapter.id, model.id)).find((item) => item.chunkIndex === index && item.text === chunks[index])
   if (existing) {
     onProgress?.({ phase: '读取本地音频', chunkIndex: index + 1, totalChunks: chunks.length })
     return existing
   }
   onProgress?.({ phase: '本地生成音频', chunkIndex: index + 1, totalChunks: chunks.length })
+  onProgress?.({ phase: '读取 Piper 配置', chunkIndex: index + 1, totalChunks: chunks.length })
   const config = await loadConfig(model)
-  const blob = await synthesizeChunk(chunks[index], model, config)
+  const blob = await synthesizeChunk(chunks[index], model, config, (phase) => onProgress?.({ phase, chunkIndex: index + 1, totalChunks: chunks.length }))
   const audio: AudioCacheRecord = {
     id: `${chapter.id}:${model.id}:${index}`,
     bookId: chapter.bookId,
@@ -249,6 +267,13 @@ export async function synthesizeChapterChunk(
   }
   await db.saveAudio(audio)
   return audio
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`单个文本块超过 ${Math.round(timeoutMs / 1000)} 秒未完成，可能是 iPhone WASM 推理过慢或资源加载失败。请刷新 PWA 后重试。`)), timeoutMs)
+    promise.then((value) => { window.clearTimeout(timer); resolve(value) }, (error) => { window.clearTimeout(timer); reject(error) })
+  })
 }
 
 export { splitIntoChunks }

@@ -23,6 +23,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   const [duration, setDuration] = useState(0)
   const [rate, setRate] = useState(1)
   const [ttsProgress, setTtsProgress] = useState({ done: 0, total: 0 })
+  const [ttsElapsed, setTtsElapsed] = useState(0)
   const audioElement = useRef<HTMLAudioElement>(null)
   const urls = useRef<string[]>([])
   const currentAudio = useRef<AudioCacheRecord[]>([])
@@ -33,6 +34,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   const lastSaved = useRef(0)
   const currentPlan = useRef<{ chapter: ChapterRecord; model: ModelRecord; totalChunks: number } | undefined>(undefined)
   const chunkPromises = useRef(new Map<string, Promise<AudioCacheRecord | undefined>>())
+  const ttsStartedAt = useRef<number | undefined>(undefined)
 
   const chapter = chapters[chapterIndex]
   const model = models[0]
@@ -45,6 +47,14 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   useEffect(() => {
     currentChapterIndex.current = chapterIndex
   }, [chapterIndex])
+
+  useEffect(() => {
+    if (!ttsStartedAt.current || ttsProgress.done >= ttsProgress.total) return
+    const updateElapsed = () => setTtsElapsed(Math.floor((performance.now() - ttsStartedAt.current!) / 1000))
+    updateElapsed()
+    const timer = window.setInterval(updateElapsed, 1000)
+    return () => window.clearInterval(timer)
+  }, [ttsProgress.done, ttsProgress.total])
 
   useEffect(() => {
     let active = true
@@ -242,6 +252,8 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     setAudioIndex(0)
     setProgress(0)
     setTtsProgress({ done: 0, total: totalChunks })
+    ttsStartedAt.current = performance.now()
+    setTtsElapsed(0)
     await saveProgress(nextIndex)
     setBusy(true)
     try {
@@ -309,7 +321,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     <article className="reader-text"><h4>{chapter?.title}</h4>{chapter?.text.split(/\n+/).filter(Boolean).map((paragraph, index) => <p key={`${chapter.id}-${index}`}>{paragraph}</p>)}</article>
     <div className="player-panel">
       <div className="player-status"><span className={playing ? 'pulse' : 'offline-dot'} />{phase}</div>
-      {ttsProgress.total > 0 && <div className="tts-progress"><span style={{ width: `${Math.round((ttsProgress.done / ttsProgress.total) * 100)}%` }} /><small>本章音频 {ttsProgress.done}/{ttsProgress.total} 段</small></div>}
+      {ttsProgress.total > 0 && <div className="tts-progress"><span style={{ width: `${Math.round((ttsProgress.done / ttsProgress.total) * 100)}%` }} /><small>本章音频 {ttsProgress.done}/{ttsProgress.total} 段 · 已耗时 {ttsElapsed} 秒</small></div>}
       <input className="seek" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(progress, duration || 0)} onChange={(event) => { const value = Number(event.target.value); setProgress(value); if (audioElement.current) audioElement.current.currentTime = value }} />
       <div className="time-row"><span>{formatTime(progress)}</span><span>{formatTime(duration)}</span></div>
       <div className="player-controls"><button onClick={() => void moveChapter(-1)} disabled={chapterIndex === 0}>上一章</button><button className="play-button" onClick={() => void handlePlay()} disabled={busy}>{playing ? '暂停' : busy ? `生成 ${Math.max(1, ttsProgress.done + 1)}/${ttsProgress.total}…` : '播放'}</button><button onClick={() => void moveChapter(1)} disabled={chapterIndex === chapters.length - 1}>下一章</button></div>
