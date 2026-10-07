@@ -1,8 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
 :root { font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; color: #e8eef6; background: #0c1018; font-synthesis: none; }
+html { background: #0c1018; }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: radial-gradient(circle at 90% 0%, #192b40 0, #0c1018 32rem); }
+body { margin: 0; min-width: 320px; overflow-x: hidden; background-color: #0c1018; background-image: radial-gradient(circle at 90% 0%, #192b40 0, #0c1018 32rem); }
 button, input { font: inherit; }
 button { border: 0; cursor: pointer; }
 .app-shell { min-height: 100svh; max-width: 760px; margin: 0 auto; padding: max(18px, env(safe-area-inset-top)) 20px calc(95px + env(safe-area-inset-bottom)); }
@@ -46,3 +47,7 @@ h1, h2, h3, h4, p { margin: 0; } h1 { font-size: 16px; letter-spacing: .02em; } 
 .collapse-button { padding: 7px 9px; color: #8d9caf; background: #ffffff08; border-radius: 8px; font-size: 10px; }
 .reader-text mark { scroll-margin-top: 86px; }
 .dialogue-hint { display: block; margin-top: 0 !important; line-height: 1.45; }
+@media (hover: none) and (pointer: coarse) {
+  .player-panel, .bottom-nav, .reader-page-nav { background: #111824; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .bottom-nav { background: #0d131e; }
+}

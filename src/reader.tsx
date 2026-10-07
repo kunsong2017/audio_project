@@ -51,6 +51,9 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   const chunkPromises = useRef(new Map<string, Promise<AudioCacheRecord | undefined>>())
   const ttsStartedAt = useRef<number | undefined>(undefined)
   const runId = useRef(0)
+  const playbackIntent = useRef(false)
+  const pauseGuardUntil = useRef(0)
+  const resumeTimer = useRef<number | undefined>(undefined)
 
   const chapter = chapters[chapterIndex]
   const model = models.find((item) => item.id === activeModelId) ?? models[0]
@@ -129,11 +132,24 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       void handleAudioEnded()
     }
     const onPlay = () => setPlaying(true)
-    const onPause = () => setPlaying(false)
+    const onPause = () => {
+      setPlaying(false)
+      if (!playbackIntent.current || performance.now() < pauseGuardUntil.current || element.ended || element.error) return
+      setPhase('播放短暂中断，正在继续…')
+      if (resumeTimer.current !== undefined) window.clearTimeout(resumeTimer.current)
+      resumeTimer.current = window.setTimeout(() => {
+        if (!playbackIntent.current || !element.paused || element.ended) return
+        void element.play().catch(() => {
+          playbackIntent.current = false
+          setPhase('播放已暂停，请点击播放继续')
+        })
+      }, 180)
+    }
     const onError = () => {
       const code = element.error?.code
       const reason = code === MediaError.MEDIA_ERR_DECODE ? 'WAV 解码失败' : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED ? 'Safari 不支持此音频格式' : '音频资源加载失败'
       setPlaying(false)
+      playbackIntent.current = false
       setPhase(reason)
       onNotice(`${reason}。如果是首次播放，请保持联网并再点击一次播放。`)
     }
@@ -148,6 +164,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       element.removeEventListener('play', onPlay)
       element.removeEventListener('pause', onPause)
       element.removeEventListener('error', onError)
+      if (resumeTimer.current !== undefined) window.clearTimeout(resumeTimer.current)
     }
   }, [chapter, chapterIndex, chapters.length])
 
@@ -167,6 +184,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   }, [book.title, chapter?.title])
 
   useEffect(() => () => {
+    playbackIntent.current = false
     audioElement.current?.pause()
     urls.current.forEach((url) => URL.revokeObjectURL(url))
   }, [])
@@ -285,6 +303,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     if (currentChapterIndex.current + 1 < chapters.length) {
       await startChapter(currentChapterIndex.current + 1, true)
     } else {
+      playbackIntent.current = false
       setPlaying(false)
       setPhase('本书已播放完')
     }
@@ -304,8 +323,9 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   async function playAudioIndex(index: number, records: AudioCacheRecord[]) {
     const element = audioElement.current
-    const record = records[index]
+    const record = records.find((item) => item.chunkIndex === index)
     if (!element || !record) return
+    const totalChunks = currentPlan.current?.totalChunks ?? records.length
     currentAudioIndex.current = index
     setAudioIndex(index)
     setProgress(0)
@@ -314,30 +334,37 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     urls.current = []
     const url = URL.createObjectURL(record.blob)
     urls.current.push(url)
+    pauseGuardUntil.current = performance.now() + 700
+    element.pause()
     element.src = url
     element.playbackRate = rate
     element.load()
     try {
       await element.play()
-      setPhase(`播放第 ${index + 1}/${records.length} 个文本块`)
+      setPhase(`播放第 ${index + 1}/${totalChunks} 个文本块`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/notallowed|gesture|user/i.test(message)) {
+        playbackIntent.current = false
         setPhase('音频已生成，请再次点击播放（iPhone 播放权限限制）')
         onNotice('音频已生成，请再次点击播放。')
       } else {
+        playbackIntent.current = false
         setPhase('音频播放失败')
         onNotice(`音频播放失败：${message || '请重试当前文本块'}`)
       }
     }
   }
 
-  async function startChapter(nextIndex: number, autoPlay = false) {
+  async function startChapter(nextIndex: number, autoPlay = false, startChunkIndex = 0) {
     const nextChapter = chapters[nextIndex]
     if (!nextChapter || !model) return
     const totalChunks = splitIntoChunks(nextChapter.text).length
+    const firstChunkIndex = Math.min(Math.max(0, startChunkIndex), Math.max(0, totalChunks - 1))
     const plan: ChapterPlan = { runId: ++runId.current, chapter: nextChapter, model, dialogueModels, totalChunks }
+    pauseGuardUntil.current = performance.now() + 900
     audioElement.current?.pause()
+    playbackIntent.current = autoPlay
     setPlaying(false)
     setChapterIndex(nextIndex)
     currentChapterIndex.current = nextIndex
@@ -354,13 +381,14 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     await saveProgress(nextIndex)
     setBusy(true)
     try {
-      const first = await ensureChunk(plan, 0)
+      const first = await ensureChunk(plan, firstChunkIndex)
       if (!first) throw new Error('当前章节没有可朗读文本')
       if (!isCurrentPlan(plan)) return
-      currentAudioIndex.current = 0
-      setPhase(`首个文本块已就绪（1/${totalChunks}），正在准备播放`)
-      if (autoPlay) await playAudioIndex(0, currentAudio.current)
-      void continueGenerating(plan, 1)
+      currentAudioIndex.current = firstChunkIndex
+      setAudioIndex(firstChunkIndex)
+      setPhase(`文本块 ${firstChunkIndex + 1}/${totalChunks} 已就绪，正在准备播放`)
+      if (autoPlay) await playAudioIndex(firstChunkIndex, currentAudio.current)
+      void continueGenerating(plan, firstChunkIndex + 1)
       void prewarmNext(nextIndex)
     } catch (error) {
       if (!isCurrentPlan(plan)) return
@@ -368,6 +396,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       setPhase('TTS 生成失败')
       setErrorDetail(detail)
       onNotice(detail)
+      playbackIntent.current = false
     } finally {
       if (isCurrentPlan(plan)) setBusy(false)
     }
@@ -391,8 +420,13 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     if (!model) { onNotice('请先在 Benchmark 页面下载中文 Piper 模型。'); return }
     if (!chapter) return
     if (audio.length > 0) {
-      if (audioElement.current?.paused) await playAudioIndex(audioIndex, audio)
-      else audioElement.current?.pause()
+      if (audioElement.current?.paused) {
+        playbackIntent.current = true
+        await playAudioIndex(audioIndex, audio)
+      } else {
+        playbackIntent.current = false
+        audioElement.current?.pause()
+      }
       return
     }
     await startChapter(chapterIndex, true)
@@ -420,6 +454,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   }
 
   async function resetAudioAfterVoiceChange(message: string) {
+    playbackIntent.current = false
     audioElement.current?.pause()
     setPlaying(false)
     currentPlan.current = undefined
@@ -462,13 +497,35 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   }
 
   function turnPage(direction: -1 | 1) {
-    window.scrollBy({ top: direction * Math.round(window.innerHeight * 0.78), behavior: 'smooth' })
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+    const nextScroll = Math.min(maxScroll, Math.max(0, window.scrollY + direction * Math.round(window.innerHeight * 0.78)))
+    window.scrollTo({ top: nextScroll, behavior: 'auto' })
+  }
+
+  function startFromParagraph(text: string) {
+    if (!chapter) return
+    const chunks = splitIntoChunks(chapter.text)
+    const paragraphStart = chapter.text.indexOf(text)
+    if (paragraphStart < 0) return
+    let searchFrom = 0
+    let targetIndex = 0
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunkStart = chapter.text.indexOf(chunks[index], searchFrom)
+      if (chunkStart < 0) break
+      if (chunkStart >= paragraphStart && chunkStart < paragraphStart + text.length) {
+        targetIndex = index
+        break
+      }
+      searchFrom = chunkStart + chunks[index].length
+    }
+    setPlayerExpanded(true)
+    void startChapter(chapterIndex, true, targetIndex)
   }
 
   function renderParagraph(text: string, index: number) {
     const start = activeText ? text.indexOf(activeText) : -1
-    if (start < 0) return <p key={`${chapter?.id}-${index}`}>{text}</p>
-    return <p className="active-paragraph" key={`${chapter?.id}-${index}`}>{text.slice(0, start)}<mark ref={activeTextRef}>{activeText}</mark>{text.slice(start + activeText.length)}</p>
+    if (start < 0) return <p key={`${chapter?.id}-${index}`} onDoubleClick={() => startFromParagraph(text)}>{text}</p>
+    return <p className="active-paragraph" key={`${chapter?.id}-${index}`} onDoubleClick={() => startFromParagraph(text)}>{text.slice(0, start)}<mark ref={activeTextRef}>{activeText}</mark>{text.slice(start + activeText.length)}</p>
   }
 
   if (chapters.length === 0) return <div className="reader-page"><button className="text-button" onClick={onBack}>← 返回书架</button><div className="empty-state"><p>正在读取章节…</p></div></div>
