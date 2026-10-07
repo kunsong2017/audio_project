@@ -10,7 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.0.7'
+const APP_VERSION = 'v1.0.8'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -33,6 +33,7 @@ function App() {
   const [notice, setNotice] = useState('')
   const [readingBook, setReadingBook] = useState<BookRecord>()
   const [remoteVersion, setRemoteVersion] = useState('')
+  const [updating, setUpdating] = useState(false)
 
   const refresh = async () => {
     const [nextBooks, nextModels, nextStats] = await Promise.all([db.books(), db.models(), db.stats()])
@@ -60,7 +61,34 @@ function App() {
   }, [])
   const updateAvailable = pwa.needRefresh[0] || Boolean(remoteVersion && remoteVersion !== APP_VERSION)
   const updateNow = async () => {
-    try { await pwa.updateServiceWorker(true) } catch { window.location.reload() }
+    if (updating) return
+    setUpdating(true)
+    try {
+      const registration = await navigator.serviceWorker?.getRegistration(import.meta.env.BASE_URL)
+      if (registration) {
+        await registration.update()
+        const installing = registration.installing
+        if (installing) {
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              if (installing.state === 'installed' || installing.state === 'activated' || installing.state === 'redundant') {
+                installing.removeEventListener('statechange', finish)
+                resolve()
+              }
+            }
+            installing.addEventListener('statechange', finish)
+            finish()
+          })
+        }
+        registration.waiting?.postMessage({ type: 'SKIP_WAITING' })
+      } else {
+        await pwa.updateServiceWorker(true)
+      }
+    } catch {
+      // A normal reload is still useful when Safari has already activated the new worker.
+    } finally {
+      window.location.reload()
+    }
   }
 
   return (
@@ -70,7 +98,7 @@ function App() {
         <div><div className="eyebrow">OFFLINE FIRST / V1</div><h1>听书 <small className="app-version">{APP_VERSION}</small></h1></div>
         <div className="connection"><span className={isOnline ? 'live-dot' : 'offline-dot'} />{isOnline ? '在线' : '离线'}</div>
       </header>
-      {updateAvailable && <button className="update-banner" onClick={() => void updateNow()}>发现新版本 {remoteVersion || ''}，点击立即更新</button>}
+      {updateAvailable && <button className="update-banner" disabled={updating} onClick={() => void updateNow()}>{updating ? '正在更新…' : `发现新版本 ${remoteVersion || ''}，点击立即更新`}</button>}
       <main>
         <section className="hero">
           <div>
