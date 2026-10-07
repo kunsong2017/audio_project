@@ -27,6 +27,7 @@ export interface TtsProgress {
 }
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
+const AUDIO_VERSION = 2
 const MAX_CHUNK_LENGTH = 220
 const CHUNK_TIMEOUT_MS = 90_000
 type TtsStage = (phase: string) => void
@@ -39,24 +40,18 @@ function splitIntoChunks(text: string, maxLength = MAX_CHUNK_LENGTH): string[] {
   if (trimmed.length <= maxLength) return [trimmed]
   const sentences = trimmed.match(/[^。！？!?…\n]+[。！？!?…\n]*/g) ?? [trimmed]
   const chunks: string[] = []
-  let current = ''
-  const push = () => {
-    const value = current.trim()
-    if (value) chunks.push(value)
-    current = ''
-  }
   for (const sentence of sentences) {
-    if ((current + sentence).length > maxLength && current) push()
-    if (sentence.length <= maxLength) current += sentence
-    else {
+    if (sentence.length <= maxLength) {
+      const value = sentence.trim()
+      if (value) chunks.push(value)
+    } else {
       for (let index = 0; index < sentence.length; index += maxLength) {
         const part = sentence.slice(index, index + maxLength)
         if (part.length === maxLength) chunks.push(part)
-        else current += part
+        else if (part.trim()) chunks.push(part.trim())
       }
     }
   }
-  push()
   return chunks
 }
 
@@ -217,7 +212,22 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
   }
   const output = outputs.output?.data
   if (!output || !(output instanceof Float32Array || output instanceof Float64Array)) throw new Error('Piper 推理没有返回音频输出')
-  return pcmToWav(Float32Array.from(output), config.audio.sample_rate)
+  return pcmToWav(addSentencePause(Float32Array.from(output), text, config.audio.sample_rate), config.audio.sample_rate)
+}
+
+function addSentencePause(pcm: Float32Array, text: string, sampleRate: number): Float32Array {
+  const ending = text.trim()
+  const pauseSeconds = /[。！？!?…](?:[”」』）)】]*)$/.test(ending)
+    ? 0.28
+    : /[，,、；;：:](?:[”」』）)】]*)$/.test(ending)
+      ? 0.14
+      : 0
+  if (!pauseSeconds) return pcm
+  const silence = new Float32Array(Math.round(sampleRate * pauseSeconds))
+  const result = new Float32Array(pcm.length + silence.length)
+  result.set(pcm)
+  result.set(silence, pcm.length)
+  return result
 }
 
 function pcmToWav(pcm: Float32Array, sampleRate: number): Blob {
@@ -274,7 +284,7 @@ async function synthesizeChapterChunkInner(
 ): Promise<AudioCacheRecord | undefined> {
   const chunks = splitIntoChunks(chapter.text)
   if (!chunks[index]) return undefined
-  const existing = (await db.audioForChapter(chapter.id, model.id)).find((item) => item.chunkIndex === index && item.text === chunks[index])
+  const existing = (await db.audioForChapter(chapter.id, model.id)).find((item) => item.audioVersion === AUDIO_VERSION && item.chunkIndex === index && item.text === chunks[index])
   if (existing) {
     onProgress?.({ phase: '读取本地音频', chunkIndex: index + 1, totalChunks: chunks.length })
     return existing
@@ -285,6 +295,7 @@ async function synthesizeChapterChunkInner(
   const blob = await synthesizeChunk(chunks[index], model, config, (phase) => onProgress?.({ phase, chunkIndex: index + 1, totalChunks: chunks.length }))
   const audio: AudioCacheRecord = {
     id: `${chapter.id}:${model.id}:${index}`,
+    audioVersion: AUDIO_VERSION,
     bookId: chapter.bookId,
     chapterId: chapter.id,
     modelId: model.id,

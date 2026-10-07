@@ -40,6 +40,7 @@ export interface ModelBlobRecord {
 
 export interface AudioCacheRecord {
   id: string
+  audioVersion?: number
   bookId?: string
   chapterId?: string
   modelId: string
@@ -55,6 +56,8 @@ export interface AppSettings {
   id: 'settings'
   playbackRate: number
   activeModelId?: string
+  dialogueModelId?: string
+  autoDialogueVoice?: boolean
 }
 
 export interface StorageStats {
