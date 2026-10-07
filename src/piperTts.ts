@@ -64,25 +64,33 @@ async function loadConfig(model: ModelRecord): Promise<PiperConfig> {
   if (record) return JSON.parse(await record.blob.text()) as PiperConfig
 
   if (!navigator.onLine) throw new Error('旧模型缺少 Piper 配置。请联网打开一次书籍，自动补齐配置后即可离线使用。')
-  const configUrl = model.configUrl ?? model.url.replace(/\.onnx(\?.*)?$/i, '.onnx.json$1')
-  const response = await fetch(configUrl, { cache: 'no-store' })
-  if (!response.ok) throw new Error(`旧模型配置自动修复失败：HTTP ${response.status}。请确认模型地址旁边存在 .onnx.json。`)
-  const configText = await response.text()
-  let config: PiperConfig
-  try {
-    config = JSON.parse(configText) as PiperConfig
-  } catch {
-    throw new Error('旧模型配置自动修复失败：.onnx.json 不是有效 JSON。')
+  const originalUrl = model.configUrl ?? model.url.replace(/\.onnx(\?.*)?$/i, '.onnx.json$1')
+  const urls = [originalUrl]
+  if (originalUrl.includes('huggingface.co/')) urls.push(originalUrl.replace('https://huggingface.co/', 'https://hf-mirror.com/'))
+  const failures: string[] = []
+  for (const configUrl of [...new Set(urls)]) {
+    try {
+      const response = await fetch(configUrl, { cache: 'no-store' })
+      if (!response.ok) {
+        failures.push(`${response.status} ${new URL(configUrl).host}`)
+        continue
+      }
+      const configText = await response.text()
+      const config = JSON.parse(configText) as PiperConfig
+      if (!config.audio?.sample_rate || !config.espeak?.voice || !config.inference) throw new Error('配置字段不完整')
+      await db.saveModelData({
+        id: `${model.id}:config`,
+        modelId: model.id,
+        bytes: new Blob([configText]).size,
+        blob: new Blob([configText], { type: 'application/json' }),
+      })
+      await db.saveModel({ ...model, configUrl })
+      return config
+    } catch (error) {
+      failures.push(`${new URL(configUrl).host}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
-  if (!config.audio?.sample_rate || !config.espeak?.voice || !config.inference) throw new Error('旧模型配置自动修复失败：Piper 配置字段不完整。')
-  await db.saveModelData({
-    id: `${model.id}:config`,
-    modelId: model.id,
-    bytes: new Blob([configText]).size,
-    blob: new Blob([configText], { type: 'application/json' }),
-  })
-  await db.saveModel({ ...model, configUrl })
-  return config
+  throw new Error(`旧模型配置自动修复失败（${failures.join('；')}）。请在线重新下载模型，或检查模型地址旁边是否存在 .onnx.json。`)
 }
 
 async function loadSession(model: ModelRecord, onStage?: TtsStage): Promise<ort.InferenceSession> {
@@ -184,7 +192,12 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
   }
   if (Object.keys(config.speaker_id_map ?? {}).length > 0) feeds.sid = new ort.Tensor('int64', BigInt64Array.from([0n]))
   onStage?.('WASM 推理生成音频')
-  const outputs = await session.run(feeds)
+  let outputs: Record<string, ort.Tensor>
+  try {
+    outputs = await session.run(feeds)
+  } catch (error) {
+    throw new Error(`Piper WASM 推理失败：${error instanceof Error ? error.message : String(error)}`)
+  }
   const output = outputs.output?.data
   if (!output || !(output instanceof Float32Array || output instanceof Float64Array)) throw new Error('Piper 推理没有返回音频输出')
   return pcmToWav(Float32Array.from(output), config.audio.sample_rate)

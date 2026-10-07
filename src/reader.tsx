@@ -24,6 +24,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   const [rate, setRate] = useState(1)
   const [ttsProgress, setTtsProgress] = useState({ done: 0, total: 0 })
   const [ttsElapsed, setTtsElapsed] = useState(0)
+  const [errorDetail, setErrorDetail] = useState('')
   const audioElement = useRef<HTMLAudioElement>(null)
   const urls = useRef<string[]>([])
   const currentAudio = useRef<AudioCacheRecord[]>([])
@@ -252,6 +253,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     setAudioIndex(0)
     setProgress(0)
     setTtsProgress({ done: 0, total: totalChunks })
+    setErrorDetail('')
     ttsStartedAt.current = performance.now()
     setTtsElapsed(0)
     await saveProgress(nextIndex)
@@ -265,8 +267,10 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       void continueGenerating(plan, 1)
       void prewarmNext(nextIndex)
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
       setPhase('TTS 生成失败')
-      onNotice(error instanceof Error ? error.message : String(error))
+      setErrorDetail(detail)
+      onNotice(detail)
     } finally {
       setBusy(false)
     }
@@ -322,6 +326,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     <div className="player-panel">
       <div className="player-status"><span className={playing ? 'pulse' : 'offline-dot'} />{phase}</div>
       {ttsProgress.total > 0 && <div className="tts-progress"><span style={{ width: `${Math.round((ttsProgress.done / ttsProgress.total) * 100)}%` }} /><small>本章音频 {ttsProgress.done}/{ttsProgress.total} 段 · 已耗时 {ttsElapsed} 秒</small></div>}
+      {errorDetail && <div className="tts-error">{errorDetail}</div>}
       <input className="seek" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(progress, duration || 0)} onChange={(event) => { const value = Number(event.target.value); setProgress(value); if (audioElement.current) audioElement.current.currentTime = value }} />
       <div className="time-row"><span>{formatTime(progress)}</span><span>{formatTime(duration)}</span></div>
       <div className="player-controls"><button onClick={() => void moveChapter(-1)} disabled={chapterIndex === 0}>上一章</button><button className="play-button" onClick={() => void handlePlay()} disabled={busy}>{playing ? '暂停' : busy ? `生成 ${Math.max(1, ttsProgress.done + 1)}/${ttsProgress.total}…` : '播放'}</button><button onClick={() => void moveChapter(1)} disabled={chapterIndex === chapters.length - 1}>下一章</button></div>
