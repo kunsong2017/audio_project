@@ -14,8 +14,10 @@ export default defineConfig({
         { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', dest: 'ort' },
         { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', dest: 'ort' },
         { src: 'node_modules/@mintplex-labs/piper-tts-web/dist/piper-o91UDS6e.js', dest: 'piper' },
-        { src: 'node_modules/piper-tts-web/dist/piper/piper_phonemize.data', dest: 'piper' },
-        { src: 'node_modules/piper-tts-web/dist/piper/piper_phonemize.wasm', dest: 'piper' },
+        // Keep the Emscripten glue, WASM binary, and preloaded data from the
+        // exact pair declared by @mintplex-labs/piper-tts-web.
+        { src: 'node_modules/@diffusionstudio/piper-wasm/build/piper_phonemize.data', dest: 'piper' },
+        { src: 'node_modules/@diffusionstudio/piper-wasm/build/piper_phonemize.wasm', dest: 'piper' },
       ],
     }),
     VitePWA({
