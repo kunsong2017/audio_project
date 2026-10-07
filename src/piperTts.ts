@@ -88,10 +88,15 @@ async function loadSession(model: ModelRecord): Promise<ort.InferenceSession> {
   const record = (await db.modelData()).find((item) => item.id === model.id)
   if (!record) throw new Error('本地没有该模型，请先在线下载一次。')
   configureOrt()
-  const session = await ort.InferenceSession.create(await record.blob.arrayBuffer(), {
-    executionProviders: ['wasm'],
-    graphOptimizationLevel: 'all',
-  })
+  let session: ort.InferenceSession
+  try {
+    session = await ort.InferenceSession.create(await record.blob.arrayBuffer(), {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all',
+    })
+  } catch (error) {
+    throw new Error(`ONNX 模型加载失败：${error instanceof Error ? error.message : String(error)}。请保持联网并刷新 PWA 后重试。`)
+  }
   sessionCache = { modelId: model.id, session }
   return session
 }
@@ -103,7 +108,12 @@ function configureOrt(): void {
 }
 
 async function loadPhonemizeFactory(): Promise<PhonemizeFactory> {
-  phonemizeFactoryPromise ??= import(/* @vite-ignore */ `${PIPER_BASE}piper-o91UDS6e.js`).then((module) => module.createPiperPhonemize as PhonemizeFactory)
+  phonemizeFactoryPromise ??= import(/* @vite-ignore */ `${PIPER_BASE}piper-o91UDS6e.js`)
+    .then((module) => module.createPiperPhonemize as PhonemizeFactory)
+    .catch((error) => {
+      phonemizeFactoryPromise = undefined
+      throw new Error(`中文音素引擎加载失败：${error instanceof Error ? error.message : String(error)}。请在线刷新一次页面。`)
+    })
   return phonemizeFactoryPromise
 }
 
@@ -200,35 +210,45 @@ export async function synthesizeChapter(
   model: ModelRecord,
   onProgress?: (progress: TtsProgress) => void,
 ): Promise<AudioCacheRecord[]> {
-  const config = await loadConfig(model)
   const chunks = splitIntoChunks(chapter.text)
-  const existing = await db.audioForChapter(chapter.id, model.id)
   const output: AudioCacheRecord[] = []
   for (let index = 0; index < chunks.length; index += 1) {
-    const cached = existing.find((item) => item.chunkIndex === index)
-    if (cached) {
-      output.push(cached)
-      onProgress?.({ phase: '读取本地音频', chunkIndex: index + 1, totalChunks: chunks.length })
-      continue
-    }
-    onProgress?.({ phase: '本地生成音频', chunkIndex: index + 1, totalChunks: chunks.length })
-    const blob = await synthesizeChunk(chunks[index], model, config)
-    const audio: AudioCacheRecord = {
-      id: `${chapter.id}:${model.id}:${index}`,
-      bookId: chapter.bookId,
-      chapterId: chapter.id,
-      modelId: model.id,
-      chunkIndex: index,
-      text: chunks[index],
-      bytes: blob.size,
-      duration: blob.size > 44 ? (blob.size - 44) / (config.audio.sample_rate * 2) : 0,
-      createdAt: Date.now(),
-      blob,
-    }
-    await db.saveAudio(audio)
-    output.push(audio)
+    const audio = await synthesizeChapterChunk(chapter, model, index, onProgress)
+    if (audio) output.push(audio)
   }
   return output
+}
+
+export async function synthesizeChapterChunk(
+  chapter: ChapterRecord,
+  model: ModelRecord,
+  index: number,
+  onProgress?: (progress: TtsProgress) => void,
+): Promise<AudioCacheRecord | undefined> {
+  const chunks = splitIntoChunks(chapter.text)
+  if (!chunks[index]) return undefined
+  const existing = (await db.audioForChapter(chapter.id, model.id)).find((item) => item.chunkIndex === index)
+  if (existing) {
+    onProgress?.({ phase: '读取本地音频', chunkIndex: index + 1, totalChunks: chunks.length })
+    return existing
+  }
+  onProgress?.({ phase: '本地生成音频', chunkIndex: index + 1, totalChunks: chunks.length })
+  const config = await loadConfig(model)
+  const blob = await synthesizeChunk(chunks[index], model, config)
+  const audio: AudioCacheRecord = {
+    id: `${chapter.id}:${model.id}:${index}`,
+    bookId: chapter.bookId,
+    chapterId: chapter.id,
+    modelId: model.id,
+    chunkIndex: index,
+    text: chunks[index],
+    bytes: blob.size,
+    duration: blob.size > 44 ? (blob.size - 44) / (config.audio.sample_rate * 2) : 0,
+    createdAt: Date.now(),
+    blob,
+  }
+  await db.saveAudio(audio)
+  return audio
 }
 
 export { splitIntoChunks }
