@@ -9,8 +9,8 @@ import type { AppTab, BenchmarkResult, BookRecord, ModelRecord, StorageStats } f
 import { ReaderPage } from './reader'
 import './styles.css'
 
-configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.3.4'
+const ORT_PROXY_WORKER = configureOrt(import.meta.env.BASE_URL)
+const APP_VERSION = 'v1.3.5'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -146,6 +146,7 @@ function App() {
             <CapabilityPill label={offlineReady ? '离线缓存就绪' : '等待离线缓存'} ok={offlineReady} />
             <CapabilityPill label="IndexedDB" ok={'indexedDB' in window} />
             <CapabilityPill label="WASM" ok={typeof WebAssembly !== 'undefined'} />
+            <CapabilityPill label={ORT_PROXY_WORKER ? 'ORT Worker' : 'ORT Safari 兼容'} ok />
             <CapabilityPill label="Media Session" ok={'mediaSession' in navigator} />
           </div>
           {!offlineReady && <small>首次打开需要在线完成静态资源缓存；之后可从主屏幕离线启动。</small>}

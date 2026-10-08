@@ -13,10 +13,20 @@ function modelId(url: string): string {
   return `model-${crypto.subtle ? btoa(url).replace(/[^a-z0-9]/gi, '').slice(-24) : url.length}`
 }
 
-export function configureOrt(baseUrl: string): void {
+function supportsOrtProxyWorker(): boolean {
+  if (typeof Worker === 'undefined') return false
+  const userAgent = navigator.userAgent
+  const iosDevice = /iPad|iPhone|iPod/i.test(userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  const safari = /Safari/i.test(userAgent) && !/(Chrome|Chromium|CriOS|Edg|OPR|FxiOS)/i.test(userAgent)
+  return !iosDevice && !safari
+}
+
+export function configureOrt(baseUrl: string): boolean {
   ort.env.wasm.wasmPaths = `${baseUrl}ort/`
   ort.env.wasm.numThreads = 1
-  ort.env.wasm.proxy = true
+  ort.env.wasm.proxy = supportsOrtProxyWorker()
+  return ort.env.wasm.proxy
 }
 
 export async function downloadModel(url: string, onProgress?: (progress: BenchmarkProgress) => void): Promise<ModelRecord> {

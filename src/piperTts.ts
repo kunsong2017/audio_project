@@ -1,5 +1,6 @@
 import * as ort from 'onnxruntime-web/wasm'
 import { db } from './db'
+import { configureOrt } from './onnxBenchmark'
 import type { AudioCacheRecord, ChapterRecord, ModelRecord } from './types'
 
 interface PiperConfig {
@@ -110,7 +111,7 @@ async function loadSession(model: ModelRecord, onStage?: TtsStage): Promise<ort.
   }
   const record = (await db.modelData()).find((item) => item.id === model.id)
   if (!record) throw new Error('本地没有该模型，请先在线下载一次。')
-  configureOrt()
+  configureOrt(import.meta.env.BASE_URL)
   onStage?.('加载 ONNX 模型（首次可能需要几十秒）')
   let session: ort.InferenceSession
   try {
@@ -119,16 +120,11 @@ async function loadSession(model: ModelRecord, onStage?: TtsStage): Promise<ort.
       graphOptimizationLevel: 'all',
     })
   } catch (error) {
-    throw new Error(`ONNX 模型加载失败：${error instanceof Error ? error.message : String(error)}。请保持联网并刷新 PWA 后重试。`)
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`ONNX 模型加载失败：${detail}。请确认版本为 v1.3.5，并完全关闭 PWA 后重新打开；模型无需删除。首次缓存 WASM 运行时需要联网。`)
   }
   sessionCache = { modelId: model.id, session }
   return session
-}
-
-function configureOrt(): void {
-  ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
-  ort.env.wasm.numThreads = 1
-  ort.env.wasm.proxy = true
 }
 
 async function loadPhonemizeFactory(): Promise<PhonemizeFactory> {
