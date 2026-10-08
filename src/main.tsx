@@ -2,6 +2,8 @@ import { StrictMode, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 import { configureOrt, downloadModel, runBenchmark } from './onnxBenchmark'
+import { runKokoroBenchmark } from './kokoroBenchmark'
+import type { KokoroBenchmarkResult, KokoroVoice } from './kokoroBenchmark'
 import { db, formatBytes } from './db'
 import { parseTxt } from './txt'
 import { parseEpub } from './epub'
@@ -10,7 +12,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 const ORT_PROXY_WORKER = configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.3.6'
+const APP_VERSION = 'v1.3.7'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -206,8 +208,45 @@ function BenchmarkPage({ models, onChanged, onNotice }: { models: ModelRecord[];
     </div>
     <div className="benchmark-action"><div><span className="eyebrow">TEST TEXT</span><strong>100 / 500 / 1000 字</strong></div><button className="primary-button" disabled={busy || !selected} onClick={() => void handleRun()}>{busy ? phase : '运行本地 benchmark'} <span>→</span></button></div>
     {(phase !== '准备就绪' || results.length > 0) && <div className="panel result-panel"><div className="result-head"><span className="field-label">运行状态</span><strong>{phase}</strong></div>{results.length > 0 ? <div className="result-grid">{results.map((result) => <div className={`result-card ${result.ok ? 'success' : 'failure'}`} key={result.characters}><div className="result-number">{result.characters}<small>字</small></div><div className="result-values"><span>推理 <b>{result.inferenceMs?.toFixed(0) ?? '—'} ms</b></span><span>音频 <b>{result.durationSec?.toFixed(2) ?? '—'} s</b></span></div><small>{result.ok ? 'WASM 输出可识别' : result.error}</small></div>)}</div> : <div className="progress-line"><span style={{ width: `${Math.round((downloadProgress ?? 0) * 100)}%` }} /></div>}</div>}
+    <KokoroBenchmarkPanel onNotice={onNotice} />
     <div className="callout"><span>i</span><p>验收建议：在 iPhone Safari 中添加到主屏幕后，先在线下载模型并运行一次；打开飞行模式，重新启动 PWA，再运行相同 benchmark。离线成功才算模型链路成立。</p></div>
   </>
+}
+
+function KokoroBenchmarkPanel({ onNotice }: { onNotice: (value: string) => void }) {
+  const [voice, setVoice] = useState<KokoroVoice>('zf_001')
+  const [phase, setPhase] = useState('尚未运行')
+  const [progress, setProgress] = useState<number>()
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<KokoroBenchmarkResult>()
+
+  useEffect(() => () => { if (result?.audioUrl) URL.revokeObjectURL(result.audioUrl) }, [result?.audioUrl])
+
+  const run = async () => {
+    if (busy) return
+    setBusy(true); setResult(undefined); setProgress(0)
+    try {
+      const next = await runKokoroBenchmark(import.meta.env.BASE_URL, voice, ({ phase: nextPhase, progress: nextProgress }) => {
+        setPhase(nextPhase); setProgress(nextProgress)
+      })
+      setResult(next); setPhase('Kokoro 试听生成完成'); setProgress(1)
+    } catch (error) {
+      setPhase('Kokoro 运行失败')
+      onNotice(error instanceof Error ? error.message : String(error))
+    } finally { setBusy(false) }
+  }
+
+  return <div className="panel kokoro-panel">
+    <div className="result-head"><div><span className="eyebrow accent">REPLACEMENT CANDIDATE</span><h4>Kokoro 中文 WASM 实验</h4></div><span className="chip">q8 · 约 127MB</span></div>
+    <p>Huayan 连续调参无改善，因此暂不再改播放器。这里独立测试更自然的 Kokoro 中文模型；首次需联网下载，成功后模型进入浏览器缓存。</p>
+    <div className="kokoro-actions">
+      <label><span>试听人声</span><select value={voice} disabled={busy} onChange={(event) => setVoice(event.target.value as KokoroVoice)}><option value="zf_001">女声 zf_001</option><option value="zm_009">男声 zm_009</option></select></label>
+      <button className="primary-button" disabled={busy} onClick={() => void run()}>{busy ? phase : result ? '重新生成 100 字' : '下载并生成 100 字'}</button>
+    </div>
+    <small>请先只判断声音是否明显比 Huayan 自然。模型约 127MB，iPhone 首次加载可能需要数分钟；本实验不会改变书架中的听书模型。</small>
+    {busy && <div className="progress-line"><span style={{ width: `${Math.round((progress ?? 0) * 100)}%` }} /></div>}
+    {(busy || result) && <div className="kokoro-status"><span>{phase}</span>{result && <><div className="result-values"><span>模型加载 <b>{result.loadMs.toFixed(0)} ms</b></span><span>100 字推理 <b>{result.inferenceMs.toFixed(0)} ms</b></span><span>音频时长 <b>{result.durationSec.toFixed(2)} s</b></span></div><audio controls preload="metadata" src={result.audioUrl} /></>}</div>}
+  </div>
 }
 
 function ImportPage({ onImported, onNotice }: { onImported: (format: string, duplicate: boolean, title: string) => Promise<void>; onNotice: (message: string) => void }) {

@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@diffusionstudio/piper-wasm": "1.0.0",
+    "@huggingface/transformers": "^4.3.1",
     "@mintplex-labs/piper-tts-web": "^1.0.5",
+    "@uzen/kokoro-js": "^1.2.4",
     "fflate": "^0.8.3",
     "onnxruntime-web": "^1.21.0",
     "react": "^19.1.0",

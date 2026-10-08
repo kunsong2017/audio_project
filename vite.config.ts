@@ -13,6 +13,8 @@ export default defineConfig({
       targets: [
         { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', dest: 'ort' },
         { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', dest: 'ort' },
+        { src: 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', dest: 'kokoro-ort' },
+        { src: 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', dest: 'kokoro-ort' },
         { src: 'node_modules/@mintplex-labs/piper-tts-web/dist/piper-o91UDS6e.js', dest: 'piper' },
         // Keep the Emscripten glue, WASM binary, and preloaded data from the
         // exact pair declared by @mintplex-labs/piper-tts-web.
