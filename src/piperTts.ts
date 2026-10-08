@@ -28,7 +28,7 @@ export interface TtsProgress {
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
 const AUDIO_VERSION = 8
-const MAX_CHUNK_LENGTH = 120
+const MAX_CHUNK_LENGTH = 180
 const CHUNK_TIMEOUT_MS = 90_000
 type TtsStage = (phase: string) => void
 let phonemizeFactoryPromise: Promise<PhonemizeFactory> | undefined
@@ -128,7 +128,7 @@ async function loadSession(model: ModelRecord, onStage?: TtsStage): Promise<ort.
 function configureOrt(): void {
   ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
   ort.env.wasm.numThreads = 1
-  ort.env.wasm.proxy = false
+  ort.env.wasm.proxy = true
 }
 
 async function loadPhonemizeFactory(): Promise<PhonemizeFactory> {

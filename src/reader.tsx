@@ -18,6 +18,22 @@ interface ChapterPlan {
   totalChunks: number
 }
 
+interface PlaybackSegment {
+  chunkIndex: number
+  start: number
+  duration: number
+}
+
+interface PlaybackBatch {
+  blob: Blob
+  startIndex: number
+  endIndex: number
+  duration: number
+  segments: PlaybackSegment[]
+}
+
+const MAX_PLAYBACK_BATCH = 4
+
 export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
   const [chapters, setChapters] = useState<ChapterRecord[]>([])
   const [chapterIndex, setChapterIndex] = useState(book.currentChapter)
@@ -53,6 +69,7 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
   const playbackIntent = useRef(false)
   const pauseGuardUntil = useRef(0)
   const resumeTimer = useRef<number | undefined>(undefined)
+  const currentBatch = useRef<PlaybackBatch | undefined>(undefined)
 
   const chapter = chapters[chapterIndex]
   const model = models.find((item) => item.id === activeModelId) ?? models[0]
@@ -132,6 +149,14 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     const onTime = () => {
       setProgress(element.currentTime)
       setDuration(Number.isFinite(element.duration) ? element.duration : 0)
+      const batch = currentBatch.current
+      if (batch) {
+        const segment = [...batch.segments].reverse().find((item) => element.currentTime + 0.01 >= item.start) ?? batch.segments[0]
+        if (segment && segment.chunkIndex !== currentAudioIndex.current) {
+          currentAudioIndex.current = segment.chunkIndex
+          setAudioIndex(segment.chunkIndex)
+        }
+      }
       const now = Date.now()
       if (now - lastSaved.current < 5000 || !chapter) return
       lastSaved.current = now
@@ -181,8 +206,14 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     const mediaSession = navigator.mediaSession
     if (!mediaSession) return
     mediaSession.metadata = new MediaMetadata({ title: chapter?.title ?? book.title, artist: '本地 Piper TTS', album: book.title })
-    mediaSession.setActionHandler('play', () => { void audioElement.current?.play() })
-    mediaSession.setActionHandler('pause', () => audioElement.current?.pause())
+    mediaSession.setActionHandler('play', () => {
+      playbackIntent.current = true
+      void audioElement.current?.play()
+    })
+    mediaSession.setActionHandler('pause', () => {
+      playbackIntent.current = false
+      audioElement.current?.pause()
+    })
     mediaSession.setActionHandler('previoustrack', () => void moveChapter(-1))
     mediaSession.setActionHandler('nexttrack', () => void moveChapter(1))
     return () => {
@@ -297,14 +328,14 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
 
   async function handleAudioEnded() {
     const plan = currentPlan.current
-    const nextIndex = currentAudioIndex.current + 1
+    const nextIndex = (currentBatch.current?.endIndex ?? currentAudioIndex.current) + 1
     if (plan && nextIndex < plan.totalChunks) {
       setPhase(`准备第 ${nextIndex + 1}/${plan.totalChunks} 个文本块`)
       try {
         const record = await ensureChunk(plan, nextIndex)
         if (record) {
           await playAudioIndex(nextIndex, currentAudio.current)
-          void primeUpcoming(plan, nextIndex + 1)
+          void primeUpcoming(plan, (currentBatch.current?.endIndex ?? nextIndex) + 1, MAX_PLAYBACK_BATCH)
         }
       } catch (error) {
         setPlaying(false)
@@ -337,14 +368,23 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     const element = audioElement.current
     const record = records.find((item) => item.chunkIndex === index)
     if (!element || !record) return
+    const candidates: AudioCacheRecord[] = []
+    for (let chunkIndex = index; chunkIndex < index + MAX_PLAYBACK_BATCH; chunkIndex += 1) {
+      const candidate = records.find((item) => item.chunkIndex === chunkIndex)
+      if (!candidate) break
+      candidates.push(candidate)
+    }
+    const batch = await createPlaybackBatch(candidates)
+    if (!batch || currentPlan.current?.chapter.id !== record.chapterId) return
     const totalChunks = currentPlan.current?.totalChunks ?? records.length
     currentAudioIndex.current = index
+    currentBatch.current = batch
     setAudioIndex(index)
     setProgress(0)
-    setDuration(record.duration)
+    setDuration(batch.duration)
     urls.current.forEach((url) => URL.revokeObjectURL(url))
     urls.current = []
-    const url = URL.createObjectURL(record.blob)
+    const url = URL.createObjectURL(batch.blob)
     urls.current.push(url)
     pauseGuardUntil.current = performance.now() + 700
     element.pause()
@@ -353,7 +393,7 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     element.load()
     try {
       await element.play()
-      setPhase(`播放第 ${index + 1}/${totalChunks} 个文本块`)
+      setPhase(batch.endIndex > index ? `连续播放第 ${index + 1}-${batch.endIndex + 1}/${totalChunks} 段` : `播放第 ${index + 1}/${totalChunks} 段`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/notallowed|gesture|user/i.test(message)) {
@@ -382,6 +422,7 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     currentChapterIndex.current = nextIndex
     window.scrollTo({ top: 0, behavior: 'auto' })
     currentPlan.current = plan
+    currentBatch.current = undefined
     chunkPromises.current.clear()
     setAudio([])
     currentAudio.current = []
@@ -401,7 +442,7 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
       setAudioIndex(firstChunkIndex)
       setPhase(`文本块 ${firstChunkIndex + 1}/${totalChunks} 已就绪，正在准备播放`)
       if (autoPlay) await playAudioIndex(firstChunkIndex, currentAudio.current)
-      void primeUpcoming(plan, firstChunkIndex + 1)
+      void primeUpcoming(plan, firstChunkIndex + 1, MAX_PLAYBACK_BATCH)
     } catch (error) {
       if (!isCurrentPlan(plan)) return
       const detail = error instanceof Error ? error.message : String(error)
@@ -434,7 +475,11 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     if (audio.length > 0) {
       if (audioElement.current?.paused) {
         playbackIntent.current = true
-        await playAudioIndex(audioIndex, audio)
+        if (audioElement.current.src && currentBatch.current && !audioElement.current.ended) {
+          await audioElement.current.play()
+        } else {
+          await playAudioIndex(audioIndex, audio)
+        }
       } else {
         playbackIntent.current = false
         audioElement.current?.pause()
@@ -470,6 +515,7 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     audioElement.current?.pause()
     setPlaying(false)
     currentPlan.current = undefined
+    currentBatch.current = undefined
     chunkPromises.current.clear()
     prewarming.current.clear()
     currentAudio.current = []
@@ -570,6 +616,63 @@ export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
     </div>
     <audio ref={audioElement} preload="auto" />
   </div>
+}
+
+async function createPlaybackBatch(records: AudioCacheRecord[]): Promise<PlaybackBatch | undefined> {
+  if (records.length === 0) return undefined
+  const parts: ArrayBuffer[] = []
+  const segments: PlaybackSegment[] = []
+  let format: { channels: number; sampleRate: number; byteRate: number; blockAlign: number; bitsPerSample: number } | undefined
+  let duration = 0
+  for (const record of records) {
+    const buffer = await record.blob.arrayBuffer()
+    if (buffer.byteLength < 44) break
+    const view = new DataView(buffer)
+    if (view.getUint32(0, false) !== 0x52494646 || view.getUint32(8, false) !== 0x57415645 || view.getUint16(20, true) !== 1) break
+    const nextFormat = {
+      channels: view.getUint16(22, true),
+      sampleRate: view.getUint32(24, true),
+      byteRate: view.getUint32(28, true),
+      blockAlign: view.getUint16(32, true),
+      bitsPerSample: view.getUint16(34, true),
+    }
+    if (format && (format.channels !== nextFormat.channels || format.sampleRate !== nextFormat.sampleRate || format.bitsPerSample !== nextFormat.bitsPerSample)) break
+    format ??= nextFormat
+    const declaredBytes = view.getUint32(40, true)
+    const pcmBytes = Math.min(declaredBytes, buffer.byteLength - 44)
+    if (pcmBytes <= 0) break
+    const partDuration = pcmBytes / nextFormat.byteRate
+    segments.push({ chunkIndex: record.chunkIndex ?? segments.length, start: duration, duration: partDuration })
+    duration += partDuration
+    parts.push(buffer.slice(44, 44 + pcmBytes))
+  }
+  if (!format || parts.length === 0 || segments.length === 0) return undefined
+  if (parts.length === 1) {
+    return { blob: records[0].blob, startIndex: segments[0].chunkIndex, endIndex: segments[0].chunkIndex, duration, segments }
+  }
+  const dataBytes = parts.reduce((total, part) => total + part.byteLength, 0)
+  const header = new ArrayBuffer(44)
+  const view = new DataView(header)
+  view.setUint32(0, 0x52494646, false)
+  view.setUint32(4, 36 + dataBytes, true)
+  view.setUint32(8, 0x57415645, false)
+  view.setUint32(12, 0x666d7420, false)
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, format.channels, true)
+  view.setUint32(24, format.sampleRate, true)
+  view.setUint32(28, format.byteRate, true)
+  view.setUint16(32, format.blockAlign, true)
+  view.setUint16(34, format.bitsPerSample, true)
+  view.setUint32(36, 0x64617461, false)
+  view.setUint32(40, dataBytes, true)
+  return {
+    blob: new Blob([header, ...parts], { type: 'audio/wav' }),
+    startIndex: segments[0].chunkIndex,
+    endIndex: segments[segments.length - 1].chunkIndex,
+    duration,
+    segments,
+  }
 }
 
 function formatTime(value: number): string {

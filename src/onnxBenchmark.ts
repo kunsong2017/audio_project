@@ -16,7 +16,7 @@ function modelId(url: string): string {
 export function configureOrt(baseUrl: string): void {
   ort.env.wasm.wasmPaths = `${baseUrl}ort/`
   ort.env.wasm.numThreads = 1
-  ort.env.wasm.proxy = false
+  ort.env.wasm.proxy = true
 }
 
 export async function downloadModel(url: string, onProgress?: (progress: BenchmarkProgress) => void): Promise<ModelRecord> {
