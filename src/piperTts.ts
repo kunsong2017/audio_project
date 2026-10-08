@@ -7,8 +7,10 @@ interface PiperConfig {
   audio: { sample_rate: number }
   espeak: { voice: string }
   inference: { noise_scale: number; length_scale: number; noise_w: number }
+  num_symbols?: number
   speaker_id_map?: Record<string, number>
   phoneme_id_map?: Record<string, number[]>
+  phoneme_map?: Record<string, string[]>
 }
 
 interface PhonemizeModule {
@@ -28,7 +30,7 @@ export interface TtsProgress {
 }
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
-const AUDIO_VERSION = 8
+const AUDIO_VERSION = 9
 const MAX_CHUNK_LENGTH = 180
 const CHUNK_TIMEOUT_MS = 90_000
 type TtsStage = (phase: string) => void
@@ -149,17 +151,8 @@ async function phonemize(text: string, config: PiperConfig, onStage?: TtsStage):
           const parsed = JSON.parse(data) as { phoneme_ids?: number[]; phonemes?: string[] }
           if (!parsed.phoneme_ids) throw new Error('Piper 音素解析没有返回 phoneme_ids')
           const phonemeMap = config.phoneme_id_map
-          if (phonemeMap && parsed.phonemes?.length === parsed.phoneme_ids.length) {
-            const mappedIds = parsed.phonemes.flatMap((phoneme) => phonemeMap[phoneme] ?? [])
-            if (!mappedIds.length) throw new Error('当前模型词表与中文音素结果不匹配')
-            settled = true
-            resolve(mappedIds)
-            return
-          }
-          if (phonemeMap) {
-            const validIds = new Set(Object.values(phonemeMap).flat())
-            const mappedIds = parsed.phoneme_ids.filter((id) => validIds.has(id))
-            if (!mappedIds.length) throw new Error('当前模型词表与中文音素结果不匹配')
+          if (phonemeMap && parsed.phonemes?.length) {
+            const mappedIds = mapPhonemesToModelIds(parsed.phonemes, text, config)
             settled = true
             resolve(mappedIds)
             return
@@ -199,6 +192,38 @@ async function phonemize(text: string, config: PiperConfig, onStage?: TtsStage):
   })
 }
 
+function mapPhonemesToModelIds(phonemes: string[], text: string, config: PiperConfig): number[] {
+  const idMap = config.phoneme_id_map
+  if (!idMap) throw new Error('Piper 模型配置缺少 phoneme_id_map')
+  const bos = idMap['^'] ?? [1]
+  const pad = idMap['_'] ?? [0]
+  const eos = idMap['$'] ?? [2]
+  const visibleTextLength = text.replace(/\s/g, '').length
+  const hanCharacters = text.match(/[\u3400-\u9fff]/g)?.length ?? 0
+  const compactMandarinSpacing = /^cmn(?:-|$)/i.test(config.espeak.voice)
+    && visibleTextLength > 0
+    && hanCharacters / visibleTextLength >= 0.5
+    && !/[A-Za-z]/.test(text)
+  const ids = [...bos, ...pad]
+  let mappedPhonemes = 0
+  for (const sourcePhoneme of phonemes) {
+    if (compactMandarinSpacing && sourcePhoneme === ' ') continue
+    const targetPhonemes = config.phoneme_map?.[sourcePhoneme] ?? [sourcePhoneme]
+    for (const phoneme of targetPhonemes) {
+      const phonemeIds = idMap[phoneme]
+      if (!phonemeIds?.length) continue
+      ids.push(...phonemeIds, ...pad)
+      mappedPhonemes += 1
+    }
+  }
+  ids.push(...eos)
+  if (mappedPhonemes === 0) throw new Error('当前模型词表与中文音素结果不匹配')
+  const symbolCount = config.num_symbols ?? Math.max(...Object.values(idMap).flat()) + 1
+  const invalidId = ids.find((id) => id < 0 || id >= symbolCount)
+  if (invalidId !== undefined) throw new Error(`模型音素编号 ${invalidId} 超出词表范围 0-${symbolCount - 1}`)
+  return ids
+}
+
 async function synthesizeChunk(text: string, model: ModelRecord, config: PiperConfig, onStage?: TtsStage): Promise<Blob> {
   const session = await loadSession(model, onStage)
   const phonemeIds = await phonemize(text, config, onStage)
@@ -222,7 +247,31 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
   }
   const output = outputs.output?.data
   if (!output || !(output instanceof Float32Array || output instanceof Float64Array)) throw new Error('Piper 推理没有返回音频输出')
-  return pcmToWav(addSentencePause(Float32Array.from(output), text, config.audio.sample_rate), config.audio.sample_rate)
+  const pcm = trimModelEdgeSilence(Float32Array.from(output), config.audio.sample_rate)
+  return pcmToWav(addSentencePause(pcm, text, config.audio.sample_rate), config.audio.sample_rate)
+}
+
+function trimModelEdgeSilence(pcm: Float32Array, sampleRate: number): Float32Array {
+  const windowSize = Math.max(1, Math.round(sampleRate * 0.01))
+  if (pcm.length < windowSize * 4) return pcm
+  let peak = 0
+  for (const sample of pcm) peak = Math.max(peak, Math.abs(sample))
+  if (peak < 0.001) return pcm
+  const threshold = Math.max(0.0005, peak * 0.012)
+  const windowIsActive = (start: number): boolean => {
+    const end = Math.min(pcm.length, start + windowSize)
+    let energy = 0
+    for (let index = start; index < end; index += 1) energy += pcm[index] * pcm[index]
+    return Math.sqrt(energy / (end - start)) >= threshold
+  }
+  let firstActive = 0
+  while (firstActive + windowSize < pcm.length && !windowIsActive(firstActive)) firstActive += windowSize
+  let lastActive = Math.max(0, pcm.length - windowSize)
+  while (lastActive > firstActive && !windowIsActive(lastActive)) lastActive -= windowSize
+  const safetyMargin = Math.round(sampleRate * 0.015)
+  const start = Math.max(0, firstActive - safetyMargin)
+  const end = Math.min(pcm.length, lastActive + windowSize + safetyMargin)
+  return start === 0 && end === pcm.length ? pcm : pcm.slice(start, end)
 }
 
 function addSentencePause(pcm: Float32Array, text: string, sampleRate: number): Float32Array {

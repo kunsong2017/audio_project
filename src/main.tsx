@@ -10,7 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 const ORT_PROXY_WORKER = configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.3.5'
+const APP_VERSION = 'v1.3.6'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
