@@ -10,7 +10,7 @@ import { ReaderPage } from './reader'
 import './styles.css'
 
 configureOrt(import.meta.env.BASE_URL)
-const APP_VERSION = 'v1.3.1'
+const APP_VERSION = 'v1.3.2'
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: '◒' },
@@ -153,7 +153,7 @@ function App() {
         <div className="page-content">
           {tab === 'benchmark' && <BenchmarkPage models={models} onChanged={refresh} onNotice={setNotice} />}
           {tab === 'import' && <ImportPage onImported={async (format, duplicate, title) => { await refresh(); setTab('library'); setNotice(duplicate ? `《${title}》已在书架中，跳过重复导入。` : `${format} 已保存在本机，原始文件仍在 Files 中。`) }} onNotice={setNotice} />}
-          {readingBook ? <ReaderPage book={readingBook} models={models} onBack={() => { setReadingBook(undefined); void refresh() }} onChanged={refresh} onNotice={setNotice} /> : tab === 'library' && <LibraryPage books={books} onOpen={(book) => setReadingBook(book)} />}
+          {readingBook ? <ReaderPage book={readingBook} models={models} onBack={() => { setReadingBook(undefined); void refresh() }} onNotice={setNotice} /> : tab === 'library' && <LibraryPage books={books} onOpen={(book) => setReadingBook(book)} />}
           {tab === 'storage' && <StoragePage stats={stats} models={models} onChanged={refresh} />}
         </div>
       </main>

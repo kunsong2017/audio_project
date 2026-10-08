@@ -7,7 +7,6 @@ interface ReaderProps {
   book: BookRecord
   models: ModelRecord[]
   onBack: () => void
-  onChanged: () => Promise<void>
   onNotice: (message: string) => void
 }
 
@@ -19,7 +18,7 @@ interface ChapterPlan {
   totalChunks: number
 }
 
-export function ReaderPage({ book, models, onBack, onChanged, onNotice }: ReaderProps) {
+export function ReaderPage({ book, models, onBack, onNotice }: ReaderProps) {
   const [chapters, setChapters] = useState<ChapterRecord[]>([])
   const [chapterIndex, setChapterIndex] = useState(book.currentChapter)
   const [audio, setAudio] = useState<AudioCacheRecord[]>([])
@@ -66,7 +65,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       .map((id) => models.find((item) => item.id === id))
       .filter((item): item is ModelRecord => Boolean(item))
     : []
-  const activeText = audio[audioIndex]?.text?.trim() ?? ''
+  const activeText = audio.find((item) => item.chunkIndex === audioIndex)?.text?.trim() ?? ''
 
   function isCurrentPlan(plan: ChapterPlan): boolean {
     return currentPlan.current?.runId === plan.runId && currentPlan.current.chapter.id === plan.chapter.id
@@ -91,17 +90,27 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
 
   useEffect(() => {
     let active = true
-    void Promise.all([db.chaptersForBook(book.id), db.getSettings()]).then(([items, settings]) => {
+    void db.chaptersForBook(book.id).then((items) => {
       if (!active) return
       setChapters(items)
-      setChapterIndex(Math.min(book.currentChapter, Math.max(0, items.length - 1)))
+      const savedChapter = Math.min(bookRef.current.currentChapter, Math.max(0, items.length - 1))
+      setChapterIndex(savedChapter)
+      currentChapterIndex.current = savedChapter
+    })
+    return () => { active = false }
+  }, [book.id])
+
+  useEffect(() => {
+    let active = true
+    void db.getSettings().then((settings) => {
+      if (!active) return
       setRate(settings.playbackRate || 1)
-      setActiveModelId(settings.activeModelId ?? models[0]?.id ?? '')
+      setActiveModelId(settings.activeModelId ?? '')
       setDialogueModelIds(settings.dialogueModelIds ?? (settings.dialogueModelId ? [settings.dialogueModelId] : []))
       setAutoDialogueVoice(settings.autoDialogueVoice ?? false)
     })
     return () => { active = false }
-  }, [book.id, book.currentChapter, models])
+  }, [book.id])
 
   useEffect(() => {
     const element = audioElement.current
@@ -124,9 +133,9 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       setProgress(element.currentTime)
       setDuration(Number.isFinite(element.duration) ? element.duration : 0)
       const now = Date.now()
-      if (now - lastSaved.current < 1500 || !chapter) return
+      if (now - lastSaved.current < 5000 || !chapter) return
       lastSaved.current = now
-      void saveProgress(chapterIndex, currentAudio.current[currentAudioIndex.current]?.text)
+      void saveProgress(chapterIndex, currentAudio.current.find((item) => item.chunkIndex === currentAudioIndex.current)?.text)
     }
     const onEnded = () => {
       void handleAudioEnded()
@@ -270,8 +279,9 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     return promise
   }
 
-  async function continueGenerating(plan: ChapterPlan, fromIndex: number) {
-    for (let index = fromIndex; index < plan.totalChunks; index += 1) {
+  async function primeUpcoming(plan: ChapterPlan, fromIndex: number, count = 1) {
+    const end = Math.min(plan.totalChunks, fromIndex + count)
+    for (let index = fromIndex; index < end; index += 1) {
       try {
         await ensureChunk(plan, index)
       } catch (error) {
@@ -282,7 +292,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
         return
       }
     }
-    if (isCurrentPlan(plan)) setPhase(`当前章节已全部生成，共 ${plan.totalChunks} 个文本块`)
+    if (isCurrentPlan(plan) && end >= plan.totalChunks) void prewarmNext(currentChapterIndex.current)
   }
 
   async function handleAudioEnded() {
@@ -292,7 +302,10 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       setPhase(`准备第 ${nextIndex + 1}/${plan.totalChunks} 个文本块`)
       try {
         const record = await ensureChunk(plan, nextIndex)
-        if (record) await playAudioIndex(nextIndex, currentAudio.current)
+        if (record) {
+          await playAudioIndex(nextIndex, currentAudio.current)
+          void primeUpcoming(plan, nextIndex + 1)
+        }
       } catch (error) {
         setPlaying(false)
         setPhase('下一文本块生成失败')
@@ -318,7 +331,6 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     }
     bookRef.current = nextBook
     await db.saveBook(nextBook)
-    await onChanged()
   }
 
   async function playAudioIndex(index: number, records: AudioCacheRecord[]) {
@@ -368,6 +380,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     setPlaying(false)
     setChapterIndex(nextIndex)
     currentChapterIndex.current = nextIndex
+    window.scrollTo({ top: 0, behavior: 'auto' })
     currentPlan.current = plan
     chunkPromises.current.clear()
     setAudio([])
@@ -388,8 +401,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       setAudioIndex(firstChunkIndex)
       setPhase(`文本块 ${firstChunkIndex + 1}/${totalChunks} 已就绪，正在准备播放`)
       if (autoPlay) await playAudioIndex(firstChunkIndex, currentAudio.current)
-      void continueGenerating(plan, firstChunkIndex + 1)
-      void prewarmNext(nextIndex)
+      void primeUpcoming(plan, firstChunkIndex + 1)
     } catch (error) {
       if (!isCurrentPlan(plan)) return
       const detail = error instanceof Error ? error.message : String(error)
@@ -408,7 +420,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
     prewarming.current.add(nextChapter.id)
     try {
       const plan: ChapterPlan = { runId: -runId.current, chapter: nextChapter, model, dialogueModels, totalChunks: splitIntoChunks(nextChapter.text).length }
-      await continueGenerating(plan, 0)
+      await ensureChunk(plan, 0)
     } catch {
       // 下一章是预生成，失败时播放到该章再提示，不打断当前播放。
     } finally {
@@ -435,7 +447,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
   async function moveChapter(delta: number) {
     const nextIndex = chapterIndex + delta
     if (nextIndex < 0 || nextIndex >= chapters.length) return
-    await startChapter(nextIndex, playing)
+    await startChapter(nextIndex, playbackIntent.current)
   }
 
   async function changeRate(nextRate: number) {
@@ -543,7 +555,7 @@ export function ReaderPage({ book, models, onBack, onChanged, onNotice }: Reader
       </div>
       {playerExpanded && <>
       <div className="player-top-row"><span className="player-chapter-title">播放控制</span><div className="player-top-actions"><button className="chapter-list-button" onClick={() => setShowChapterList((visible) => !visible)}>章节目录</button><button className="collapse-button" onClick={() => setPlayerExpanded(false)}>收起</button></div></div>
-      {showChapterList && <div className="chapter-drawer"><div className="chapter-drawer-head"><strong>全部章节</strong><button onClick={() => setShowChapterList(false)}>关闭</button></div><div className="chapter-list">{chapters.map((item, position) => <button className={position === chapterIndex ? 'current' : ''} key={item.id} onClick={() => { setShowChapterList(false); void startChapter(position, playing) }}><span>{String(position + 1).padStart(3, '0')}</span><em>{item.title}</em></button>)}</div></div>}
+      {showChapterList && <div className="chapter-drawer"><div className="chapter-drawer-head"><strong>全部章节</strong><button onClick={() => setShowChapterList(false)}>关闭</button></div><div className="chapter-list">{chapters.map((item, position) => <button className={position === chapterIndex ? 'current' : ''} key={item.id} onClick={() => { setShowChapterList(false); void startChapter(position, playbackIntent.current) }}><span>{String(position + 1).padStart(3, '0')}</span><em>{item.title}</em></button>)}</div></div>}
       <div className="player-status"><span className={playing ? 'pulse' : 'offline-dot'} />{phase}</div>
       {ttsProgress.total > 0 && <div className="tts-progress"><span style={{ width: `${Math.round((ttsProgress.done / ttsProgress.total) * 100)}%` }} /><small>本章音频 {ttsProgress.done}/{ttsProgress.total} 段 · 已耗时 {ttsElapsed} 秒</small></div>}
       {errorDetail && <div className="tts-error">{errorDetail}</div>}

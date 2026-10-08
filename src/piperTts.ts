@@ -27,8 +27,8 @@ export interface TtsProgress {
 }
 
 const PIPER_BASE = `${import.meta.env.BASE_URL}piper/`
-const AUDIO_VERSION = 6
-const MAX_CHUNK_LENGTH = 220
+const AUDIO_VERSION = 7
+const MAX_CHUNK_LENGTH = 120
 const CHUNK_TIMEOUT_MS = 90_000
 type TtsStage = (phase: string) => void
 let phonemizeFactoryPromise: Promise<PhonemizeFactory> | undefined
@@ -38,20 +38,34 @@ function splitIntoChunks(text: string, maxLength = MAX_CHUNK_LENGTH): string[] {
   const trimmed = text.trim()
   if (!trimmed) return []
   if (trimmed.length <= maxLength) return [trimmed]
-  const sentences = trimmed.match(/[^。！？!?…，,、；;：:\n]+[。！？!?…，,、；;：:\n]*/g) ?? [trimmed]
+  const sentences = trimmed.match(/[^。！？!?…\n]+(?:[。！？!?…]+[”」』）)】]*|\n+|$)/g)?.filter((value) => value.trim()) ?? [trimmed]
   const chunks: string[] = []
-  for (const sentence of sentences) {
-    if (sentence.length <= maxLength) {
-      const value = sentence.trim()
-      if (value) chunks.push(value)
-    } else {
-      for (let index = 0; index < sentence.length; index += maxLength) {
-        const part = sentence.slice(index, index + maxLength)
-        if (part.length === maxLength) chunks.push(part)
-        else if (part.trim()) chunks.push(part.trim())
-      }
-    }
+  let pending = ''
+  const flush = () => {
+    const value = pending.trim()
+    if (value) chunks.push(value)
+    pending = ''
   }
+  for (const sentence of sentences) {
+    const value = sentence.trim()
+    if (!value) continue
+    if (value.length > maxLength) {
+      flush()
+      let remaining = value
+      while (remaining.length > maxLength) {
+        const window = remaining.slice(0, maxLength + 1)
+        const preferredBreak = Math.max(window.lastIndexOf('，'), window.lastIndexOf(','), window.lastIndexOf('；'), window.lastIndexOf(';'), window.lastIndexOf('：'), window.lastIndexOf(':'))
+        const cut = preferredBreak >= Math.round(maxLength * 0.55) ? preferredBreak + 1 : maxLength
+        chunks.push(remaining.slice(0, cut).trim())
+        remaining = remaining.slice(cut).trim()
+      }
+      pending = remaining
+      continue
+    }
+    if (pending && pending.length + value.length > maxLength) flush()
+    pending += value
+  }
+  flush()
   return chunks
 }
 
@@ -218,13 +232,13 @@ async function synthesizeChunk(text: string, model: ModelRecord, config: PiperCo
 function addSentencePause(pcm: Float32Array, text: string, sampleRate: number): Float32Array {
   const ending = text.trim()
   const pauseSeconds = /[！？!?](?:[”」』）)】]*)$/.test(ending)
-    ? 0.08
+    ? 0.04
     : /[。…](?:[”」』）)】]*)$/.test(ending)
-      ? 0.06
+      ? 0.03
       : /[；;：:](?:[”」』）)】]*)$/.test(ending)
-        ? 0.04
+        ? 0.015
         : /[，,、](?:[”」』）)】]*)$/.test(ending)
-          ? 0.02
+          ? 0
           : 0
   if (!pauseSeconds) return pcm
   const silence = new Float32Array(Math.round(sampleRate * pauseSeconds))
